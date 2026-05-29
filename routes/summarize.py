@@ -99,7 +99,7 @@ async def summarize(req: SummarizeRequest):
 
             et = get_cached_entity_type(request_id) or "Request"
             if summary_data and not fresh and summary_data.get("fetched_at") == fetched_at and not has_error:
-                yield f"data: {json.dumps({'type': 'result', 'text': f'[{et} #{request_id}]{source} (cached summary)\\n{cached_summary}\\n\\n'})}\n\n"
+                yield f"data: {json.dumps({'type': 'result', 'text': f'[{et} #{request_id}]{source} (cached summary)\n{cached_summary}\n\n'})}\n\n"
             else:
                 unique_lines = deduplicate_comment_dicts(comments)
                 if unique_lines:
@@ -116,21 +116,21 @@ async def summarize(req: SummarizeRequest):
             yield f"data: {json.dumps({'type': 'error', 'text': msg})}\n\n"
             return
 
-        yield f"data: {json.dumps({'type': 'result', 'text': f'Using {cached_count} cached, {fetched_count} fresh\\n\\n'})}\n\n"
+        yield f"data: {json.dumps({'type': 'result', 'text': f'Using {cached_count} cached, {fetched_count} fresh\n\n'})}\n\n"
         yield f"data: {json.dumps({'type': 'status', 'message': f'Summarizing {len(all_comments)} requests...'})}\n\n"
 
         try:
             initialize_llm()
         except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'text': f'LLM initialization error: {e}\\n'})}\n\n"
+            yield f"data: {json.dumps({'type': 'error', 'text': f'LLM initialization error: {e}\n'})}\n\n"
             return
 
         summaries = summarize_batch(all_comments)
 
-        yield f"data: {json.dumps({'type': 'result', 'text': '=' * 60 + '\\nSUPPORT CALL SUMMARY\\n' + '=' * 60 + '\\n\\n'})}\n\n"
+        yield f"data: {json.dumps({'type': 'result', 'text': '=' * 60 + '\nSUPPORT CALL SUMMARY\n' + '=' * 60 + '\n\n'})}\n\n"
 
         for i, summary in enumerate(summaries):
-            yield f"data: {json.dumps({'type': 'result', 'text': summary + '\\n\\n'})}\n\n"
+            yield f"data: {json.dumps({'type': 'result', 'text': summary + '\n\n'})}\n\n"
             rid = request_ids_to_summarize[i]
             save_summary(rid, summary)
             try:
