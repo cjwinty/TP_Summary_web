@@ -105,10 +105,16 @@
     <section class="card" id="cache-section">
         <h3>Cache Management</h3>
         <div id="cache-stats" hx-get="/settings/cache-stats" hx-trigger="load" hx-swap="innerHTML"></div>
-        <div class="btn-row">
-            <button class="btn btn-danger" @click="clearSummaries()">Clear Summaries</button>
+        <div class="btn-row" style="flex-wrap:wrap;">
             <button class="btn btn-secondary" @click="healthCheck()">Check Health</button>
             <button class="btn btn-secondary" @click="optimiseDB()">Optimise DB</button>
+        </div>
+        <div class="btn-row" style="flex-wrap:wrap;margin-top:4px;">
+            <button class="btn btn-danger btn-small" @click="clearEntityData()">Clear Entity Data</button>
+            <button class="btn btn-danger btn-small" @click="clearEntityRelations()">Clear Entity Relations</button>
+            <button class="btn btn-danger btn-small" @click="clearSummaries()">Clear Summaries</button>
+            <button class="btn btn-danger btn-small" @click="clearChatHistory()">Clear Chat History</button>
+            <button class="btn btn-danger btn-small" @click="clearAllCache()">Clear All Cache</button>
         </div>
         <div id="health-results" x-show="healthData" style="padding: 10px 0;">
             <div class="step-card" style="font-size:0.9em;">
@@ -119,8 +125,11 @@
                 <p><strong>Rows:</strong>
                     Comments: <span x-text="healthData.row_counts.comments.toLocaleString()"></span> |
                     Summaries: <span x-text="healthData.row_counts.summaries.toLocaleString()"></span> |
+                    Entity Data: <span x-text="healthData.row_counts.entity_data.toLocaleString()"></span> |
+                    Entity Relations: <span x-text="healthData.row_counts.entity_relations.toLocaleString()"></span> |
                     Custom Fields: <span x-text="healthData.row_counts.request_custom_fields.toLocaleString()"></span> |
-                    Embeddings: <span x-text="healthData.row_counts.embeddings.toLocaleString()"></span>
+                    Embeddings: <span x-text="healthData.row_counts.embeddings.toLocaleString()"></span> |
+                    Chat History: <span x-text="healthData.row_counts.chat_history.toLocaleString()"></span>
                 </p>
                 <p><strong>Indexes:</strong> <span x-text="healthData.index_count"></span></p>
                 <template x-if="healthData.orphan_fields > 0">
@@ -128,6 +137,12 @@
                 </template>
                 <template x-if="healthData.orphan_embeddings > 0">
                     <p><strong>Orphan Embeddings:</strong> <span x-text="healthData.orphan_embeddings + ' (' + healthData.orphan_embedding_percentage + '%)'"></span></p>
+                </template>
+                <template x-if="healthData.orphan_entity_data > 0">
+                    <p><strong>Orphan Entity Data:</strong> <span x-text="healthData.orphan_entity_data"></span></p>
+                </template>
+                <template x-if="healthData.orphan_entity_relations > 0">
+                    <p><strong>Orphan Entity Relations:</strong> <span x-text="healthData.orphan_entity_relations"></span></p>
                 </template>
                 <div x-show="healthData.messages && healthData.messages.length">
                     <p><strong>Messages:</strong></p>
@@ -139,6 +154,29 @@
                 </div>
             </div>
         </div>
+        <hr style="margin:16px 0;border-color:var(--border);">
+
+        <h4>Cache Range</h4>
+        <div class="form-row">
+            <label>Range:</label>
+            <input type="text" class="input" x-model="cacheRangeInput" placeholder="start-end" style="width:150px;">
+            <select class="input" x-model="cacheRangeMode" style="width:auto;">
+                <option value="smart">Smart</option>
+                <option value="force">Force</option>
+            </select>
+            <button class="btn btn-secondary" @click="cacheRange()" :disabled="cacheRangeRunning" x-show="!cacheRangeRunning">Go</button>
+            <button class="btn btn-danger" @click="stopCacheRange()" x-show="cacheRangeRunning">Stop</button>
+        </div>
+        <div x-show="cacheRangeRunning || cacheRangeDone" style="padding:4px 0;">
+            <div style="display:flex;align-items:center;gap:8px;">
+                <div class="progress-bar" style="flex:1;">
+                    <div class="progress-fill" id="cache-range-bar-fill" style="width:0%;"></div>
+                </div>
+                <span id="cache-range-pct" class="progress-label" style="min-width:40px;">0%</span>
+            </div>
+            <p class="status-text" id="cache-range-status"></p>
+        </div>
+
         <div class="btn-row" style="margin-top: 8px;">
             <select class="input" x-model="reindexMode" style="width:auto;" x-bind:disabled="reindexRunning">
                 <option value="missing">Add Missing</option>
@@ -235,6 +273,66 @@ function settingsData() {
                 const resp = await fetch('/settings/clear-summaries', { method: 'POST' });
                 const data = await resp.json();
                 this.cacheStatus = data.message || 'Summaries cleared.';
+                fetch('/settings/cache-stats').then(r => r.text()).then(html => {
+                    const el = document.getElementById('cache-stats');
+                    if (el) el.innerHTML = html;
+                });
+            } catch (e) {
+                this.cacheStatus = 'Error: ' + e;
+            }
+        },
+        async clearEntityData() {
+            if (!confirm('Clear all entity data? This cannot be undone.')) return;
+            this.cacheStatus = 'Clearing entity data...';
+            try {
+                const resp = await fetch('/settings/clear-entity-data', { method: 'POST' });
+                const data = await resp.json();
+                this.cacheStatus = data.message || 'Entity data cleared.';
+                fetch('/settings/cache-stats').then(r => r.text()).then(html => {
+                    const el = document.getElementById('cache-stats');
+                    if (el) el.innerHTML = html;
+                });
+            } catch (e) {
+                this.cacheStatus = 'Error: ' + e;
+            }
+        },
+        async clearEntityRelations() {
+            if (!confirm('Clear all entity relations? This cannot be undone.')) return;
+            this.cacheStatus = 'Clearing entity relations...';
+            try {
+                const resp = await fetch('/settings/clear-entity-relations', { method: 'POST' });
+                const data = await resp.json();
+                this.cacheStatus = data.message || 'Entity relations cleared.';
+                fetch('/settings/cache-stats').then(r => r.text()).then(html => {
+                    const el = document.getElementById('cache-stats');
+                    if (el) el.innerHTML = html;
+                });
+            } catch (e) {
+                this.cacheStatus = 'Error: ' + e;
+            }
+        },
+        async clearChatHistory() {
+            if (!confirm('Clear all chat history? This cannot be undone.')) return;
+            this.cacheStatus = 'Clearing chat history...';
+            try {
+                const resp = await fetch('/settings/clear-chat-history', { method: 'POST' });
+                const data = await resp.json();
+                this.cacheStatus = data.message || 'Chat history cleared.';
+                fetch('/settings/cache-stats').then(r => r.text()).then(html => {
+                    const el = document.getElementById('cache-stats');
+                    if (el) el.innerHTML = html;
+                });
+            } catch (e) {
+                this.cacheStatus = 'Error: ' + e;
+            }
+        },
+        async clearAllCache() {
+            if (!confirm('Clear ALL cached data? This will delete comments, summaries, entity data, relations, embeddings, and chat history. This cannot be undone.')) return;
+            this.cacheStatus = 'Clearing all cache...';
+            try {
+                const resp = await fetch('/settings/clear-all-cache', { method: 'POST' });
+                const data = await resp.json();
+                this.cacheStatus = data.message || 'All cache cleared.';
                 fetch('/settings/cache-stats').then(r => r.text()).then(html => {
                     const el = document.getElementById('cache-stats');
                     if (el) el.innerHTML = html;
@@ -477,6 +575,10 @@ function settingsData() {
             if (status) status.textContent = 'Requesting stop...';
             fetch('/settings/backfill-stop', { method: 'POST' }).catch(() => {});
         },
+        cacheRangeInput: '',
+        cacheRangeMode: 'smart',
+        cacheRangeRunning: false,
+        cacheRangeDone: false,
         projectNameRunning: false,
         projectNameDone: false,
         async startProjectNameBackfill() {
@@ -540,6 +642,76 @@ function settingsData() {
             const status = document.getElementById('project-name-status');
             if (status) status.textContent = 'Requesting stop...';
             fetch('/settings/backfill-project-names-stop', { method: 'POST' }).catch(() => {});
+        },
+        async cacheRange() {
+            const m = this.cacheRangeInput.match(/^(\d+)-(\d+)$/);
+            if (!m) { this.cacheStatus = 'Invalid range. Use format: start-end'; return; }
+            this.cacheRangeRunning = true;
+            this.cacheRangeDone = false;
+            const barFill = document.getElementById('cache-range-bar-fill');
+            const pct = document.getElementById('cache-range-pct');
+            const status = document.getElementById('cache-range-status');
+            if (barFill) barFill.style.width = '0%';
+            if (pct) pct.textContent = '0%';
+            if (status) status.textContent = 'Caching range...';
+            try {
+                const resp = await fetch('/settings/cache-range', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({start: parseInt(m[1]), end: parseInt(m[2]), mode: this.cacheRangeMode}),
+                });
+                if (!resp.ok) {
+                    const errData = await resp.json();
+                    if (status) status.textContent = errData.error || 'Error';
+                    this.cacheRangeRunning = false;
+                    return;
+                }
+                const reader = resp.body.getReader();
+                const decoder = new TextDecoder();
+                let buf = '';
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    buf += decoder.decode(value, { stream: true });
+                    const lines = buf.split('\n');
+                    buf = lines.pop() || '';
+                    for (const line of lines) {
+                        if (!line.startsWith('data: ')) continue;
+                        const msg = JSON.parse(line.slice(6));
+                        if (msg.type === 'progress') {
+                            const p = msg.percent || 0;
+                            if (barFill) barFill.style.width = p + '%';
+                            if (pct) pct.textContent = p + '%';
+                            if (msg.metadata_only) {
+                                if (status) status.textContent = msg.count + '/' + msg.total + ' (' + msg.skipped + ' skipped, ' + msg.metadata_only + ' metadata)';
+                            } else if (msg.skipped) {
+                                if (status) status.textContent = msg.count + '/' + msg.total + ' (' + msg.skipped + ' skipped)';
+                            } else {
+                                if (status) status.textContent = msg.count + '/' + msg.total;
+                            }
+                        } else if (msg.type === 'done') {
+                            if (status) status.textContent = msg.message;
+                            if (barFill) barFill.style.width = '100%';
+                            if (pct) pct.textContent = '100%';
+                        }
+                    }
+                }
+            } catch (e) {
+                const status = document.getElementById('cache-range-status');
+                if (status) status.textContent = 'Error: ' + e;
+            } finally {
+                this.cacheRangeRunning = false;
+                this.cacheRangeDone = true;
+                fetch('/settings/cache-stats').then(r => r.text()).then(html => {
+                    const el = document.getElementById('cache-stats');
+                    if (el) el.innerHTML = html;
+                });
+            }
+        },
+        stopCacheRange() {
+            const status = document.getElementById('cache-range-status');
+            if (status) status.textContent = 'Requesting stop...';
+            fetch('/settings/cache-range-stop', { method: 'POST' }).catch(() => {});
         }
     };
 }

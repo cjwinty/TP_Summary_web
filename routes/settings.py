@@ -9,8 +9,11 @@ from shared import config as cfg
 from database import (
     get_all_prompts, save_prompt, get_cache_counts, delete_all_summaries,
     get_max_min_request_id, check_database_health, optimise_database, get_conn,
+    clear_entity_data, clear_entity_relations, clear_all_chat_history,
+    clear_all_cached_data,
 )
-from shared.api import refresh_entity_metadata, get_all_projects
+from shared.api import refresh_entity_metadata, get_all_projects, get_comments as api_get_comments
+from database import auto_index_request_web, delete_embeddings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -134,7 +137,17 @@ async def test_llm_connection(req: LLMConfigRequest):
 async def cache_stats():
     counts = get_cache_counts()
     id_range = get_max_min_request_id()
-    html = f'<p class="status-text">Cached: {counts["comments"]} comments, {counts["summaries"]} summaries, {counts["custom_fields"]} custom fields, {counts["embeddings"]} embeddings</p>'
+    html = (
+        f'<p class="status-text">'
+        f'Comments: {counts["comments"]} | '
+        f'Summaries: {counts["summaries"]} | '
+        f'Entity Data: {counts["entity_data"]} | '
+        f'Entity Relations: {counts["entity_relations"]} | '
+        f'Custom Fields: {counts["custom_fields"]} | '
+        f'Embeddings: {counts["embeddings"]} | '
+        f'Chat History: {counts["chat_history"]}'
+        f'</p>'
+    )
     if id_range["min"] is not None:
         html += f'<p class="status-text">ID Range: {id_range["min"]} - {id_range["max"]}</p>'
     return HTMLResponse(html)
@@ -144,6 +157,30 @@ async def cache_stats():
 async def clear_summaries():
     delete_all_summaries()
     return JSONResponse({"message": "All summaries cleared."})
+
+
+@router.post("/settings/clear-entity-data")
+async def clear_entity_data_route():
+    clear_entity_data()
+    return JSONResponse({"message": "All entity data cleared."})
+
+
+@router.post("/settings/clear-entity-relations")
+async def clear_entity_relations_route():
+    clear_entity_relations()
+    return JSONResponse({"message": "All entity relations cleared."})
+
+
+@router.post("/settings/clear-chat-history")
+async def clear_chat_history_route():
+    clear_all_chat_history()
+    return JSONResponse({"message": "All chat history cleared."})
+
+
+@router.post("/settings/clear-all-cache")
+async def clear_all_cache_route():
+    clear_all_cached_data()
+    return JSONResponse({"message": "All cached data cleared."})
 
 
 @router.get("/settings/health")
@@ -355,3 +392,101 @@ async def backfill_project_names_status():
 async def backfill_project_names_stop():
     _project_name_state["stop"] = True
     return JSONResponse({"message": "Project name backfill stop requested."})
+
+
+# ── Cache Range ──
+
+_cache_running = False
+_cache_stop = False
+
+
+class CacheRangeRequest(BaseModel):
+    start: int
+    end: int
+    mode: str = "smart"
+
+
+@router.post("/settings/cache-range")
+async def cache_range(req: CacheRangeRequest):
+    global _cache_running, _cache_stop
+    if _cache_running:
+        return JSONResponse({"error": "Cache already running."}, status_code=400)
+
+    _cache_running = True
+    _cache_stop = False
+    start, end = req.start, req.end
+    mode = (req.mode or "smart").lower()
+
+    async def event_stream():
+        global _cache_running, _cache_stop
+        total = end - start + 1
+        count = 0
+        skipped = 0
+
+        if mode == "smart":
+            conn = get_conn()
+            c = conn.cursor()
+            c.execute("SELECT request_id FROM comments WHERE request_id BETWEEN %s AND %s", (start, end))
+            existing = {r[0] for r in c.fetchall()}
+            missing = sorted(set(range(start, end + 1)) - existing)
+            skipped = total - len(missing)
+            c.execute("""
+                SELECT c.request_id FROM comments c
+                LEFT JOIN entity_data e ON c.request_id = e.entity_id
+                WHERE c.request_id BETWEEN %s AND %s AND e.entity_id IS NULL
+            """, (start, end))
+            stale = {r[0] for r in c.fetchall()} - set(missing)
+            stale_metadata = sorted(stale)
+            if not missing and not stale_metadata:
+                _cache_running = False
+                yield f"data: {json.dumps({'type': 'progress', 'percent': 100, 'count': 0, 'total': total, 'skipped': skipped})}\n\n"
+                yield f"data: {json.dumps({'type': 'done', 'message': f'All {total} IDs already cached'})}\n\n"
+                return
+            for rid in missing:
+                if _cache_stop:
+                    break
+                api_get_comments(rid, use_cache=False)
+                refresh_entity_metadata(rid)
+                try:
+                    auto_index_request_web(rid)
+                except Exception:
+                    pass
+                count += 1
+                percent = int((count + skipped) / total * 100)
+                yield f"data: {json.dumps({'type': 'progress', 'percent': percent, 'count': count, 'total': total, 'skipped': skipped})}\n\n"
+            metadata_only_count = 0
+            for rid in stale_metadata:
+                if _cache_stop:
+                    break
+                refresh_entity_metadata(rid)
+                metadata_only_count += 1
+                count += 1
+                percent = int((count + skipped) / total * 100)
+                yield f"data: {json.dumps({'type': 'progress', 'percent': percent, 'count': count, 'total': total, 'skipped': skipped, 'metadata_only': metadata_only_count})}\n\n"
+            _cache_running = False
+            yield f"data: {json.dumps({'type': 'done', 'message': f'Cached {len(missing)} new, refreshed {metadata_only_count} metadata, skipped {skipped} existing ({total} total)'})}\n\n"
+        else:  # force
+            for rid in range(start, end + 1):
+                if _cache_stop:
+                    break
+                delete_embeddings(rid)
+                api_get_comments(rid, use_cache=False)
+                refresh_entity_metadata(rid)
+                try:
+                    auto_index_request_web(rid)
+                except Exception:
+                    pass
+                count += 1
+                percent = int((count / total) * 100)
+                yield f"data: {json.dumps({'type': 'progress', 'percent': percent, 'count': count, 'total': total})}\n\n"
+            _cache_running = False
+            yield f"data: {json.dumps({'type': 'done', 'message': f'Cached {count} requests'})}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@router.post("/settings/cache-range-stop")
+async def cache_range_stop():
+    global _cache_stop
+    _cache_stop = True
+    return JSONResponse({"message": "Cache stopping..."})

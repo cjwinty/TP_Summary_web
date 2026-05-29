@@ -24,20 +24,6 @@
             </div>
         </section>
 
-        <section class="card">
-            <h3>Cache Range</h3>
-            <input type="text" id="range-input" class="input" x-model="range" placeholder="start-end">
-            <div class="btn-row">
-                <select class="input" x-model="cacheMode" style="width:80px; padding:4px 6px;">
-                    <option value="smart">Smart</option>
-                    <option value="force">Force</option>
-                </select>
-                <button class="btn btn-secondary" @click="cacheRange()" :disabled="busy">Cache Range</button>
-                <button class="btn btn-danger" @click="stopCache()" :disabled="!cacheRunning">Stop</button>
-            </div>
-            <div class="progress-bar"><div class="progress-fill" :style="'width:' + progressPct + '%'"></div></div>
-            <span class="progress-label" x-text="progressLabel"></span>
-        </section>
     </div>
 
     <div class="results-panel">
@@ -53,15 +39,10 @@ function summariseData() {
     return {
         ids: '',
         refresh: false,
-        range: '',
         busy: false,
-        cacheRunning: false,
-        progressPct: 0,
-        progressLabel: '0%',
         status: 'Ready',
         resultsText: '',
         abortController: null,
-        cacheMode: 'smart',
         updateCacheMode: 'smart',
 
         doSummarise() {
@@ -114,57 +95,6 @@ function summariseData() {
             .finally(() => { this.busy = false; });
         },
 
-        cacheRange() {
-            const m = this.range.match(/^(\d+)-(\d+)$/);
-            if (!m) { this.status = 'Invalid range. Use format: start-end'; return; }
-            this.cacheRunning = true;
-            this.progressPct = 0;
-            this.progressLabel = '0%';
-            this.status = 'Caching range...';
-            this.abortController = new AbortController();
-            fetch('/cache/range', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({start: parseInt(m[1]), end: parseInt(m[2]), mode: this.cacheMode}),
-                signal: this.abortController.signal,
-            }).then(async r => {
-                const reader = r.body.getReader();
-                const decoder = new TextDecoder();
-                let buf = '';
-                while (true) {
-                    const {done, value} = await reader.read();
-                    if (done) break;
-                    buf += decoder.decode(value, {stream: true});
-                    const lines = buf.split('\n');
-                    buf = lines.pop() || '';
-                    for (const line of lines) {
-                        if (line.startsWith('data: ')) {
-                            const msg = JSON.parse(line.slice(6));
-                            if (msg.type === 'progress') {
-                                this.progressPct = msg.percent;
-                                if (msg.skipped) {
-                                    this.progressLabel = msg.percent + '% (' + msg.count + '/' + msg.total + ', ' + msg.skipped + ' skipped)';
-                                } else {
-                                    this.progressLabel = msg.percent + '% (' + msg.count + '/' + msg.total + ')';
-                                }
-                            } else if (msg.type === 'done') {
-                                this.status = msg.message || 'Done.';
-                                this.cacheRunning = false;
-                            }
-                        }
-                    }
-                }
-            }).catch(e => {
-                if (e.name !== 'AbortError') this.status = 'Range cache error: ' + e.message;
-                this.cacheRunning = false;
-            });
-        },
-
-        stopCache() {
-            fetch('/cache/stop', {method: 'POST'}).then(r => r.json()).then(d => {
-                this.status = d.message || 'Stopped.';
-            }).catch(e => { this.status = 'Stop error: ' + e.message; });
-        },
     };
 }
 </script>

@@ -1,5 +1,9 @@
 # AGENTS.md — TP Summary Web
 
+## Required Reading
+
+**At the start of each session, read CONTEXT.md for the conceptual knowledge base.** This file (AGENTS.md) covers technical reference; CONTEXT.md covers the "why" behind the architecture, data sources, and how context is assembled.
+
 ## What this is
 
 FastAPI web application that fetches Targetprocess ticket comments, caches them in PostgreSQL, and uses LLMs (Ollama, LM Studio, OpenAI-compatible, AWS Bedrock) to generate structured summaries, answer questions via RAG chatbot, and browse cached entity data.

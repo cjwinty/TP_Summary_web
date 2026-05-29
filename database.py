@@ -664,6 +664,44 @@ def delete_all_summaries():
         conn.commit()
 
 
+def clear_entity_data():
+    with _lock:
+        conn = _get_conn()
+        c = conn.cursor()
+        c.execute("DELETE FROM entity_data")
+        conn.commit()
+
+
+def clear_entity_relations():
+    with _lock:
+        conn = _get_conn()
+        c = conn.cursor()
+        c.execute("DELETE FROM entity_relations")
+        conn.commit()
+
+
+def clear_all_chat_history():
+    with _lock:
+        conn = _get_conn()
+        c = conn.cursor()
+        c.execute("DELETE FROM chat_history")
+        conn.commit()
+
+
+def clear_all_cached_data():
+    with _lock:
+        conn = _get_conn()
+        c = conn.cursor()
+        c.execute("DELETE FROM entity_relations")
+        c.execute("DELETE FROM entity_data")
+        c.execute("DELETE FROM embeddings")
+        c.execute("DELETE FROM summaries")
+        c.execute("DELETE FROM request_custom_fields")
+        c.execute("DELETE FROM comments")
+        c.execute("DELETE FROM chat_history")
+        conn.commit()
+
+
 def get_all_cached_ids():
     with _lock:
         conn = _get_conn()
@@ -680,7 +718,16 @@ def get_cache_counts():
         c.execute("SELECT COUNT(*) FROM summaries"); summaries = c.fetchone()[0]
         c.execute("SELECT COUNT(*) FROM request_custom_fields"); custom = c.fetchone()[0]
         c.execute("SELECT COUNT(*) FROM embeddings"); embeddings = c.fetchone()[0]
-    return {"comments": comments, "summaries": summaries, "custom_fields": custom, "embeddings": embeddings}
+        c.execute("SELECT COUNT(*) FROM entity_data"); entity_data_count = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM entity_relations"); entity_relations_count = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM chat_history"); chat_history = c.fetchone()[0]
+    return {
+        "comments": comments, "summaries": summaries,
+        "custom_fields": custom, "embeddings": embeddings,
+        "entity_data": entity_data_count,
+        "entity_relations": entity_relations_count,
+        "chat_history": chat_history,
+    }
 
 
 def get_max_min_request_id():
@@ -815,13 +862,20 @@ def check_database_health():
             c.execute("SELECT COUNT(*) FROM summaries"); summaries = c.fetchone()[0]
             c.execute("SELECT COUNT(*) FROM request_custom_fields"); custom = c.fetchone()[0]
             c.execute("SELECT COUNT(*) FROM embeddings"); embeddings_count = c.fetchone()[0]
+            c.execute("SELECT COUNT(*) FROM entity_data"); entity_data_count = c.fetchone()[0]
+            c.execute("SELECT COUNT(*) FROM entity_relations"); entity_relations_count = c.fetchone()[0]
+            c.execute("SELECT COUNT(*) FROM chat_history"); chat_history = c.fetchone()[0]
+
             c.execute("SELECT COUNT(*) FROM request_custom_fields cf WHERE cf.request_id NOT IN (SELECT request_id FROM comments)"); orphan = c.fetchone()[0]
             c.execute("SELECT COUNT(*) FROM embeddings e WHERE e.request_id NOT IN (SELECT request_id FROM comments)"); orphan_emb = c.fetchone()[0]
+            c.execute("SELECT COUNT(*) FROM entity_data e WHERE e.entity_id NOT IN (SELECT request_id FROM comments)"); orphan_ed = c.fetchone()[0]
+            c.execute("SELECT COUNT(*) FROM entity_relations r WHERE r.entity_id NOT IN (SELECT request_id FROM comments)"); orphan_er = c.fetchone()[0]
             c.execute("SELECT pg_database_size(current_database())"); size = c.fetchone()[0]
 
             # Index listing
             c.execute("""SELECT schemaname, tablename, indexname
-                         FROM pg_indexes WHERE tablename IN ('comments','summaries','request_custom_fields','embeddings')
+                         FROM pg_indexes
+                         WHERE tablename IN ('comments','summaries','request_custom_fields','embeddings','entity_data','entity_relations','chat_history')
                          ORDER BY tablename, indexname""")
             indexes = [{"table": r[1], "name": r[2]} for r in c.fetchall()]
 
@@ -830,9 +884,13 @@ def check_database_health():
                 msgs.append(f"{orphan} orphan custom field records")
             if orphan_emb > 0:
                 msgs.append(f"{orphan_emb} orphan embedding records")
+            if orphan_ed > 0:
+                msgs.append(f"{orphan_ed} orphan entity_data records")
+            if orphan_er > 0:
+                msgs.append(f"{orphan_er} orphan entity_relations records")
 
             status = "healthy"
-            if orphan > 0 or orphan_emb > 0:
+            if orphan > 0 or orphan_emb > 0 or orphan_ed > 0 or orphan_er > 0:
                 status = "warning"
 
             return {
@@ -843,11 +901,16 @@ def check_database_health():
                     "summaries": summaries,
                     "request_custom_fields": custom,
                     "embeddings": embeddings_count,
+                    "entity_data": entity_data_count,
+                    "entity_relations": entity_relations_count,
+                    "chat_history": chat_history,
                 },
                 "orphan_fields": orphan,
                 "orphan_percentage": round(orphan / max(custom, 1) * 100, 1) if custom > 0 else 0,
                 "orphan_embeddings": orphan_emb,
                 "orphan_embedding_percentage": round(orphan_emb / max(embeddings_count, 1) * 100, 1),
+                "orphan_entity_data": orphan_ed,
+                "orphan_entity_relations": orphan_er,
                 "index_count": len(indexes),
                 "indexes": indexes,
                 "messages": msgs if msgs else ["Database is healthy."],
@@ -869,6 +932,10 @@ def optimise_database():
             del_summaries = c.rowcount
             c.execute("DELETE FROM embeddings WHERE request_id NOT IN (SELECT request_id FROM comments)")
             del_embeddings = c.rowcount
+            c.execute("DELETE FROM entity_data e WHERE e.entity_id NOT IN (SELECT request_id FROM comments)")
+            del_entity_data = c.rowcount
+            c.execute("DELETE FROM entity_relations r WHERE r.entity_id NOT IN (SELECT request_id FROM comments)")
+            del_entity_relations = c.rowcount
             conn.commit()
 
             # VACUUM ANALYZE must run outside any transaction block
@@ -881,12 +948,16 @@ def optimise_database():
             if del_fields: parts.append(f"custom fields: {del_fields}")
             if del_summaries: parts.append(f"summaries: {del_summaries}")
             if del_embeddings: parts.append(f"embeddings: {del_embeddings}")
+            if del_entity_data: parts.append(f"entity_data: {del_entity_data}")
+            if del_entity_relations: parts.append(f"entity_relations: {del_entity_relations}")
             detail = f" ({', '.join(parts)})" if parts else ""
             return {
                 "message": f"VACUUM ANALYZE + orphan cleanup{detail}",
                 "deleted_orphans": del_fields,
                 "deleted_summaries": del_summaries,
                 "deleted_embeddings": del_embeddings,
+                "deleted_entity_data": del_entity_data,
+                "deleted_entity_relations": del_entity_relations,
             }
         except Exception as e:
             return {"message": f"Optimisation failed: {e}", "deleted_orphans": 0, "deleted_summaries": 0, "deleted_embeddings": 0}
@@ -897,7 +968,8 @@ def analyse_indexes():
         conn = _get_conn()
         c = conn.cursor()
         c.execute("""SELECT schemaname, tablename, indexname, indexdef
-                     FROM pg_indexes WHERE tablename IN ('comments','summaries','request_custom_fields','embeddings')
+                     FROM pg_indexes
+                     WHERE tablename IN ('comments','summaries','request_custom_fields','embeddings','entity_data','entity_relations','chat_history')
                      ORDER BY tablename, indexname""")
         return [{"schema": r[0], "table": r[1], "index": r[2], "definition": r[3]} for r in c.fetchall()]
 

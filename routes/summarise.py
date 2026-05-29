@@ -22,10 +22,6 @@ from database import (
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-_cache_running = False
-_cache_stop = False
-
-
 class SummariseRequest(BaseModel):
     ids: str
     refresh: bool = False
@@ -33,12 +29,6 @@ class SummariseRequest(BaseModel):
 
 class CacheUpdateRequest(BaseModel):
     ids: str
-    mode: str = "smart"
-
-
-class CacheRangeRequest(BaseModel):
-    start: int
-    end: int
     mode: str = "smart"
 
 
@@ -183,92 +173,6 @@ async def update_cache(req: CacheUpdateRequest):
     thread.start()
     detail = f" ({mode} mode)" if mode == "force" else ""
     return JSONResponse({"message": f"Updating cache for {len(proc)} requests{detail}..."})
-
-
-@router.post("/cache/range")
-async def cache_range(req: CacheRangeRequest):
-    global _cache_running, _cache_stop
-    if _cache_running:
-        return JSONResponse({"error": "Cache already running."}, status_code=400)
-
-    _cache_running = True
-    _cache_stop = False
-    start, end = req.start, req.end
-    mode = (req.mode or "smart").lower()
-
-    async def event_stream():
-        global _cache_running, _cache_stop
-        total = end - start + 1
-        count = 0
-        skipped = 0
-
-        if mode == "smart":
-            conn = get_conn()
-            c = conn.cursor()
-            c.execute("SELECT request_id FROM comments WHERE request_id BETWEEN %s AND %s", (start, end))
-            existing = {r[0] for r in c.fetchall()}
-            missing = sorted(set(range(start, end + 1)) - existing)
-            skipped = total - len(missing)
-            c.execute("""
-                SELECT c.request_id FROM comments c
-                LEFT JOIN entity_data e ON c.request_id = e.entity_id
-                WHERE c.request_id BETWEEN %s AND %s AND e.entity_id IS NULL
-            """, (start, end))
-            stale = {r[0] for r in c.fetchall()} - set(missing)
-            stale_metadata = sorted(stale)
-            if not missing and not stale_metadata:
-                _cache_running = False
-                yield f"data: {json.dumps({'type': 'progress', 'percent': 100, 'count': 0, 'total': total, 'skipped': skipped})}\n\n"
-                yield f"data: {json.dumps({'type': 'done', 'message': f'All {total} IDs already cached'})}\n\n"
-                return
-            for rid in missing:
-                if _cache_stop:
-                    break
-                api_get_comments(rid, use_cache=False)
-                refresh_entity_metadata(rid)
-                try:
-                    auto_index_request_web(rid)
-                except Exception:
-                    pass
-                count += 1
-                percent = int((count + skipped) / total * 100)
-                yield f"data: {json.dumps({'type': 'progress', 'percent': percent, 'count': count, 'total': total, 'skipped': skipped})}\n\n"
-            metadata_only_count = 0
-            for rid in stale_metadata:
-                if _cache_stop:
-                    break
-                refresh_entity_metadata(rid)
-                metadata_only_count += 1
-                count += 1
-                percent = int((count + skipped) / total * 100)
-                yield f"data: {json.dumps({'type': 'progress', 'percent': percent, 'count': count, 'total': total, 'skipped': skipped, 'metadata_only': metadata_only_count})}\n\n"
-            _cache_running = False
-            yield f"data: {json.dumps({'type': 'done', 'message': f'Cached {len(missing)} new, refreshed {metadata_only_count} metadata, skipped {skipped} existing ({total} total)'})}\n\n"
-        else:  # force
-            for rid in range(start, end + 1):
-                if _cache_stop:
-                    break
-                delete_embeddings(rid)
-                api_get_comments(rid, use_cache=False)
-                refresh_entity_metadata(rid)
-                try:
-                    auto_index_request_web(rid)
-                except Exception:
-                    pass
-                count += 1
-                percent = int((count / total) * 100)
-                yield f"data: {json.dumps({'type': 'progress', 'percent': percent, 'count': count, 'total': total})}\n\n"
-            _cache_running = False
-            yield f"data: {json.dumps({'type': 'done', 'message': f'Cached {count} requests'})}\n\n"
-
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
-
-
-@router.post("/cache/stop")
-async def stop_cache():
-    global _cache_stop
-    _cache_stop = True
-    return JSONResponse({"message": "Cache stopping..."})
 
 
 @router.get("/cached-ids")
