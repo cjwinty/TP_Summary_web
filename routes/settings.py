@@ -290,8 +290,8 @@ async def _project_name_sse():
 
         name_map = {}
         for p in projects:
-            pid = p.get("Id")
-            name = p.get("Name")
+            pid = p.get("id")
+            name = p.get("name")
             if pid and name:
                 try:
                     name_map[int(pid)] = name
