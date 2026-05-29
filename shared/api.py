@@ -187,7 +187,7 @@ def get_entity_data(entity_id: int, entity_type: str) -> dict | None:
     v1_base = BASE_URL.replace("/api/v2", "/api/v1")
     v1_path = V2_TO_V1_ENDPOINT.get(entity_type)
     if not v1_path:
-        logger.warning("No v1 endpoint mapping for entity type '%s'", entity_type)
+        logger.debug("No v1 endpoint mapping for entity type '%s'", entity_type)
         return None
     url = f"{v1_base}/{v1_path}/{entity_id}"
     params = {"include": "[id,customFields]"}
@@ -389,24 +389,27 @@ def refresh_entity_metadata(entity_id: int, depth: int = 0, seen: set | None = N
         entity_type = get_entity_type(entity_id)
 
     if entity_type:
-        entity_data = get_entity_data(entity_id, entity_type)
-        if entity_data:
+        if entity_type not in V2_TO_V1_ENDPOINT:
+            logger.debug("Skipping metadata for unsupported type '%s' %s", entity_type, entity_id)
+        else:
+            entity_data = get_entity_data(entity_id, entity_type)
+            if entity_data:
+                try:
+                    from database import save_entity_data as _save_entity_data
+                    _save_entity_data(entity_id, entity_type=entity_type, **entity_data)
+                except Exception:
+                    logger.warning("Failed to save entity_data for %s", entity_id)
+
             try:
-                from database import save_entity_data as _save_entity_data
-                _save_entity_data(entity_id, entity_type=entity_type, **entity_data)
+                relations = get_relations(entity_id)
+                if relations:
+                    from database import save_relations as _save_relations
+                    _save_relations(entity_id, entity_type, relations)
+
+                    if depth == 0:
+                        for rel in relations:
+                            other_id = rel.get("related_entity_id")
+                            if other_id and other_id not in seen:
+                                refresh_entity_metadata(other_id, depth=1, seen=seen)
             except Exception:
-                logger.warning("Failed to save entity_data for %s", entity_id)
-
-        try:
-            relations = get_relations(entity_id)
-            if relations:
-                from database import save_relations as _save_relations
-                _save_relations(entity_id, entity_type, relations)
-
-                if depth == 0:
-                    for rel in relations:
-                        other_id = rel.get("related_entity_id")
-                        if other_id and other_id not in seen:
-                            refresh_entity_metadata(other_id, depth=1, seen=seen)
-        except Exception:
-            logger.warning("Failed to save relations for %s", entity_id)
+                logger.warning("Failed to save relations for %s", entity_id)
