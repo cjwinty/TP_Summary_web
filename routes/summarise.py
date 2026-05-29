@@ -124,13 +124,17 @@ async def summarise(req: SummariseRequest):
             yield f"data: {json.dumps({'type': 'result', 'text': summary + '\n\n'})}\n\n"
             rid = request_ids_to_summarise[i]
             save_summary(rid, summary)
-            try:
-                auto_index_request_web(rid, index_summary=True)
-            except Exception:
-                pass
 
         yield f"data: {json.dumps({'type': 'status', 'message': 'Done! Summaries saved.'})}\n\n"
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+        def index_all():
+            for rid in request_ids_to_summarise:
+                try:
+                    auto_index_request_web(rid, index_summary=True)
+                except Exception:
+                    pass
+        threading.Thread(target=index_all, daemon=True).start()
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
@@ -169,10 +173,9 @@ async def update_cache(req: CacheUpdateRequest):
             except Exception:
                 pass
 
-    thread = threading.Thread(target=run, daemon=True)
-    thread.start()
+    run()
     detail = f" ({mode} mode)" if mode == "force" else ""
-    return JSONResponse({"message": f"Updating cache for {len(proc)} requests{detail}..."})
+    return JSONResponse({"message": f"Cache update complete for {len(proc)} requests{detail}."})
 
 
 @router.get("/cached-ids")
