@@ -39,10 +39,20 @@ The application helps users analyse support tickets by retrieving structured inf
 
 | Use Case | Data Sources | Method |
 |----------|-------------|--------|
-| **RAG / Chatbot** | Comments + Summaries | Vector search against `embeddings` (pgvector `<->`), filtered by project/company |
+| **RAG / Chatbot** | Comments + Summaries + Entity Data + Relations | Vector search against `embeddings` (pgvector `<->`), results grouped by entity, enriched with full `entity_data` + `entity_relations` from DB. Every chunk carries a metadata prefix (state, client, product). A standalone metadata blob per entity makes the holistic ticket profile searchable. |
 | **Summarisation** | Comments + existing summary | All text concatenated into one block; entity type + ID injected in the prompt header |
 | **Browse** | `entity_data` + `entity_relations` | Direct SQL queries, rendered in Alpine.js-driven Jinja2 templates |
 | **Search** | Comments + custom fields | Text search across comment data with optional custom field and date filters |
+
+## Embedding Structure
+
+Every embedding chunk (all three `chunk_type` values: `comment`, `summary`, `metadata`) has a **metadata prefix** prepended so the LLM always knows which entity, state, client, and product it came from:
+
+```
+[Request #69650 | State: Resolved | Client: Acme Corp | Product: Widget Pro] <chunk text>
+```
+
+A standalone **metadata blob** (`chunk_type='metadata'`) is created per entity containing the full ticket profile: state, project, client, product, version, all custom fields, description (truncated to 2k chars), and relations. This makes the holistic ticket profile semantically searchable — users can find tickets by description content, custom field values, or relationship patterns.
 
 ## Key Variables (Prompt Injection)
 
@@ -65,7 +75,7 @@ Prompts receive these variables automatically:
 | **Force cache range** | SSE | Deletes embeddings, re-fetches comments + metadata for every entity in range |
 | **Entity Metadata Backfill** | SSE + bg thread | Finds entities with comments but no entity_data row; fetches + saves |
 | **Project Name Backfill** | SSE (inline) | Single API call for all projects; updates all NULL `project_name` rows |
-| **Reindex (missing)** | SSE | Generates embeddings only for entities that lack them |
-| **Reindex (full)** | SSE | Regenerates all embeddings |
+| **Reindex (missing)** | SSE | Generates embeddings (with metadata prefix + blob) only for entities that lack them |
+| **Reindex (full)** | SSE | Regenerates all embeddings with metadata prefix + blob for every entity |
 
 All long-running operations use SSE streaming with a progress bar. The same pattern is reused across reindex, backfills, and cache range.

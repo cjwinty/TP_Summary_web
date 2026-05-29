@@ -1,7 +1,10 @@
 {
-  "llm_provider_type": "cloud",
+  "llm_provider_type": "local",
   "llm_cloud_provider": "bedrock",
   "llm_aws_region": "eu-west-1",
   "llm_cloud_model": "eu.amazon.nova-pro-v1:0",
-  "embedding_model": ""
+  "embedding_model": "text-embedding-nomic-embed-text-v1.5",
+  "llm_local_provider": "LM Studio",
+  "llm_local_host": "localhost",
+  "local_model": "google/gemma-4-e4b"
 }

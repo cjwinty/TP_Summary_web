@@ -51,7 +51,7 @@ All tables under `public` schema:
 | `entity_data` | Entity metadata (description, state, project, 9 custom field columns + JSONB) | No |
 | `entity_relations` | Links between entities (one level deep) | No |
 | `request_custom_fields` | Legacy table (still populated) | No |
-| `embeddings` | Vector embeddings for RAG, vector(1536) column | Yes (pgvector `<->` operator) |
+| `embeddings` | Vector embeddings for RAG, vector(1536) column. Three `chunk_type` values: `comment`, `summary`, `metadata` | Yes (pgvector `<->` operator) |
 | `chat_history` | Chat session messages | No |
 | `prompts` | Prompt templates | No |
 | `prompt_chains` | Multi-step prompt chain definitions | No |
@@ -60,6 +60,16 @@ All tables under `public` schema:
 | `prompt_chain_run_steps` | Per-step execution results | No |
 
 Embedding dimension normalised to 1536. Cosine distance via pgvector `<->` operator.
+
+### Embedding structure
+
+Every embedding chunk (comment, summary, metadata) has a **metadata prefix** prepended:
+```
+[Request #69650 | State: Resolved | Client: Acme Corp | Product: Widget Pro]
+```
+This makes every chunk self-describing — the LLM always knows which entity, state, client, and product it came from.
+
+A standalone **metadata blob** (`chunk_type='metadata'`) is created per entity containing the full ticket profile: state, project, client, product, version, all custom fields, description (truncated to 2000 chars), and relations. This makes the holistic ticket profile semantically searchable.
 
 ## Routes
 
@@ -126,7 +136,7 @@ All routes are defined under their respective router in `routes/`. The `main.py`
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/chat` | Chatbot page |
-| POST | `/chat/send` | RAG Q&A endpoint (stateful, 6-turn context, company filter) |
+| POST | `/chat/send` | RAG Q&A endpoint (stateful, 6-turn context, company filter). Groups results by entity, enriches with entity_data + relations. Returns structured sources `{id, type, state}`. |
 
 ### RAG (`/rag`)
 | Method | Path | Description |
@@ -135,6 +145,9 @@ All routes are defined under their respective router in `routes/`. The `main.py`
 | POST | `/rag/reindex-all` | SSE: regenerate all embeddings |
 | GET | `/rag/reindex-status` | Reindex progress |
 | POST | `/rag/reindex-stop` | Stop reindex |
+| POST | `/rag/ask` | RAG Q&A (grouped-by-entity context, client filter) |
+| POST | `/rag/search` | Vector search returning raw embedding matches |
+| POST | `/rag/index` | Index a single entity's comments + summary + metadata blob |
 | POST | `/rag/find-fixes` | Find similar resolved tickets and synthesise fix instructions |
 
 ## Key Modules
@@ -162,6 +175,9 @@ All routes are defined under their respective router in `routes/`. The `main.py`
 | `check_database_health()` | Row counts, orphans, indexes, DB size |
 | `optimise_database()` | VACUUM ANALYZE + orphan cleanup |
 | `clear_entity_data()` / `clear_entity_relations()` / `clear_all_chat_history()` / `clear_all_cached_data()` | Targeted deletion |
+| `_build_embedding_prefix(entity_id, entity_type, entity_data)` | Build compact metadata prefix for embedding chunks |
+| `_build_metadata_blob(entity_id, entity_type, entity_data)` | Build full ticket profile for standalone metadata embedding |
+| `auto_index_request_web(request_id, index_summary=True)` | Generate embeddings for entity: deletes existing, prepends metadata prefix to comments/summaries, creates metadata blob |
 
 ### `shared/llm_providers.py` — LLM abstraction
 - `BaseLLMProvider` → `LocalLLMProvider` (Ollama, LM Studio) / `CloudLLMProvider` (OpenAI-compat, AWS Bedrock)

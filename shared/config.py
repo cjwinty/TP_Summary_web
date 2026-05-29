@@ -73,7 +73,7 @@ _config = load_user_config()
 _secure_config = load_secure_config()
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
-OLLAMA_MODEL = _config.get("ollama_model") or os.getenv("OLLAMA_MODEL", "llama3.2")
+LOCAL_MODEL = _config.get("local_model") or os.getenv("LOCAL_MODEL") or os.getenv("OLLAMA_MODEL", "llama3.2")
 
 EMBEDDING_MODEL = _config.get("embedding_model", "")
 
@@ -95,10 +95,10 @@ PROMPT_LOGGING_ENABLED = _config.get("prompt_logging_enabled", False)
 VERIFY_SSL = _config.get("verify_ssl", True)
 
 
-def set_ollama_model(model_name):
-    global OLLAMA_MODEL
-    _config["ollama_model"] = model_name
-    OLLAMA_MODEL = model_name
+def set_local_model(model_name):
+    global LOCAL_MODEL
+    _config["local_model"] = model_name
+    LOCAL_MODEL = model_name
     save_user_config(_config)
 
 
@@ -213,21 +213,21 @@ def initialise_llm():
                 provider = CloudLLMProvider(cloud_config)
                 logger.info(f"Using cloud LLM: {provider_name}")
         else:
-            ollama_model = _config.get("ollama_model") or os.getenv("OLLAMA_MODEL", "llama3.2")
+            local_model = _config.get("local_model") or os.getenv("LOCAL_MODEL") or os.getenv("OLLAMA_MODEL", "llama3.2")
             local_provider = _config.get("llm_local_provider", "Ollama")
 
-            if not ollama_model:
+            if not local_model:
                 raise LLMProviderError("Local LLM selected but model not configured", "local")
             local_provider_config = LOCAL_PROVIDERS.get(local_provider, LOCAL_PROVIDERS["Ollama"])
             local_config = {
                 "host": _config.get("llm_local_host", "localhost"),
                 "port": local_provider_config["port"],
-                "model": ollama_model,
+                "model": local_model,
                 "timeout": 120,
                 "provider_name": local_provider,
             }
             provider = LocalLLMProvider(local_config)
-            logger.info(f"Using local LLM: {local_provider} with model {ollama_model}")
+            logger.info(f"Using local LLM: {local_provider} with model {local_model}")
 
         LLMClient.set_provider(provider)
 
@@ -269,8 +269,8 @@ def validate_llm_config():
         return len(errors) == 0, errors
     else:
         errors = []
-        ollama_model = _config.get("ollama_model") or os.getenv("OLLAMA_MODEL", "llama3.2")
-        if not ollama_model:
+        local_model = _config.get("local_model") or os.getenv("LOCAL_MODEL") or os.getenv("OLLAMA_MODEL", "llama3.2")
+        if not local_model:
             errors.append("Model not configured")
         return len(errors) == 0, errors
 

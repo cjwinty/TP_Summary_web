@@ -1061,6 +1061,52 @@ def clear_chat_history(session_id: str):
         conn.commit()
 
 
+def _build_embedding_prefix(entity_id: int, entity_type: str, entity_data: dict | None = None) -> str:
+    if entity_data is None:
+        entity_data = {}
+    fields = [f"{entity_type} #{entity_id}"]
+    state = entity_data.get("entity_state") or ""
+    if state:
+        fields.append(f"State: {state}")
+    client = entity_data.get("client") or ""
+    if client:
+        fields.append(f"Client: {client}")
+    product = entity_data.get("product") or ""
+    if product:
+        fields.append(f"Product: {product}")
+    return f"[{' | '.join(fields)}]"
+
+
+def _build_metadata_blob(entity_id: int, entity_type: str, entity_data: dict | None = None) -> str | None:
+    if not entity_data:
+        return None
+    parts = [f"[{entity_type} #{entity_id}]"]
+    state = entity_data.get("entity_state") or ""
+    if state:
+        parts.append(f"State: {state}")
+    pname = entity_data.get("project_name") or ""
+    if pname:
+        parts.append(f"Project: {pname}")
+    client = entity_data.get("client") or ""
+    if client:
+        parts.append(f"Client: {client}")
+    product = entity_data.get("product") or ""
+    if product:
+        parts.append(f"Product: {product}")
+    version = entity_data.get("release_version") or ""
+    if version:
+        parts.append(f"Version: {version}")
+    cf = entity_data.get("custom_fields") or {}
+    skip_keys = {"Client", "client", "Product", "product", "Release Version", "release_version", "Site", "site"}
+    for key, val in cf.items():
+        if val and key not in skip_keys:
+            parts.append(f"{key}: {val}")
+    desc = entity_data.get("description") or ""
+    if desc and desc != "true":
+        parts.append(f"Description: {desc[:2000]}")
+    return " | ".join(parts)
+
+
 def auto_index_request_web(request_id: int, index_summary: bool = True) -> int:
     count = 0
     try:
@@ -1071,6 +1117,16 @@ def auto_index_request_web(request_id: int, index_summary: bool = True) -> int:
         return 0
 
     entity_type = get_cached_entity_type(request_id) or "Request"
+
+    entity_data = get_entity_data(request_id)
+    prefix = _build_embedding_prefix(request_id, entity_type, entity_data)
+
+    # Delete existing embeddings so we always write fresh
+    conn = _get_conn()
+    c = conn.cursor()
+    c.execute("DELETE FROM embeddings WHERE request_id = %s", (request_id,))
+    conn.commit()
+
     comments, _ = get_cached_comments(request_id)
     if comments:
         for comment in (comments if isinstance(comments, list) else []):
@@ -1078,13 +1134,12 @@ def auto_index_request_web(request_id: int, index_summary: bool = True) -> int:
             if not text or len(text) < 20:
                 continue
             try:
-                embedding = LLMClient.generate_embedding(text)
+                prefixed = f"{prefix} {text[:5000]}"
+                embedding = LLMClient.generate_embedding(prefixed)
                 if embedding and any(v != 0.0 for v in embedding):
-                    conn = _get_conn()
-                    c = conn.cursor()
                     c.execute(
                         "INSERT INTO embeddings (request_id, chunk_text, embedding, chunk_type, created_at, entity_type) VALUES (%s, %s, %s::vector, %s, %s, %s)",
-                        (request_id, text[:5000], json.dumps(embedding), "comment", datetime.now().isoformat(), entity_type),
+                        (request_id, prefixed, json.dumps(embedding), "comment", datetime.now().isoformat(), entity_type),
                     )
                     conn.commit()
                     count += 1
@@ -1095,18 +1150,32 @@ def auto_index_request_web(request_id: int, index_summary: bool = True) -> int:
         summary, _ = get_summary(request_id)
         if summary and summary.strip() and len(summary) >= 20:
             try:
-                embedding = LLMClient.generate_embedding(summary)
+                prefixed = f"{prefix} {summary[:5000]}"
+                embedding = LLMClient.generate_embedding(prefixed)
                 if embedding and any(v != 0.0 for v in embedding):
-                    conn = _get_conn()
-                    c = conn.cursor()
                     c.execute(
                         "INSERT INTO embeddings (request_id, chunk_text, embedding, chunk_type, created_at, entity_type) VALUES (%s, %s, %s::vector, %s, %s, %s)",
-                        (request_id, summary[:5000], json.dumps(embedding), "summary", datetime.now().isoformat(), entity_type),
+                        (request_id, prefixed, json.dumps(embedding), "summary", datetime.now().isoformat(), entity_type),
                     )
                     conn.commit()
                     count += 1
             except Exception:
                 pass
+
+    # Metadata blob
+    blob = _build_metadata_blob(request_id, entity_type, entity_data)
+    if blob:
+        try:
+            embedding = LLMClient.generate_embedding(blob[:5000])
+            if embedding and any(v != 0.0 for v in embedding):
+                c.execute(
+                    "INSERT INTO embeddings (request_id, chunk_text, embedding, chunk_type, created_at, entity_type) VALUES (%s, %s, %s::vector, %s, %s, %s)",
+                    (request_id, blob[:5000], json.dumps(embedding), "metadata", datetime.now().isoformat(), entity_type),
+                )
+                conn.commit()
+                count += 1
+        except Exception:
+            pass
 
     return count
 

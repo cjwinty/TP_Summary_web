@@ -45,7 +45,7 @@ async def settings_page(request: Request):
         "llm_provider_type": cfg.LLM_PROVIDER_TYPE,
         "local_provider": cfg.LOCAL_PROVIDER,
         "local_host": cfg.LOCAL_LLM_HOST,
-        "local_model": cfg.OLLAMA_MODEL,
+        "local_model": cfg.LOCAL_MODEL,
         "cloud_type": cfg.CLOUD_CONFIG["provider"],
         "cloud_endpoint": cfg.CLOUD_CONFIG["endpoint"],
         "cloud_model": cfg.CLOUD_CONFIG["model"],
@@ -105,7 +105,7 @@ async def save_llm_config(req: LLMConfigRequest):
         else:
             cfg.set_local_provider(req.local_provider)
             cfg.set_local_host(req.host)
-            cfg.set_ollama_model(req.model)
+            cfg.set_local_model(req.model)
         cfg.set_embedding_model(req.embedding_model)
         return JSONResponse({"message": "LLM config saved."})
     except Exception as e:

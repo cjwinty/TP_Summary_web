@@ -18,7 +18,7 @@
                 <div class="chat-msg-label" x-text="msg.role === 'user' ? 'You' : 'TP Bot'"></div>
                 <div class="chat-msg-content" x-text="msg.content"></div>
                 <div class="chat-msg-sources" x-show="msg.sources && msg.sources.length > 0"
-                     x-text="'Sources: ' + msg.sources.join(', ')"></div>
+                     x-text="'Sources: ' + msg.sources.map(s => (s.type || 'Ticket') + ' #' + s.id + (s.state ? ' (' + s.state + ')' : '')).join(', ')"></div>
             </div>
         </template>
         <div x-show="loading" class="chat-msg chat-msg-assistant">
