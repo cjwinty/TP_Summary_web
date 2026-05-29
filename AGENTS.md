@@ -1,0 +1,207 @@
+# AGENTS.md — TP Summary Web
+
+## What this is
+
+FastAPI web application that fetches Targetprocess ticket comments, caches them in PostgreSQL, and uses LLMs (Ollama, LM Studio, OpenAI-compatible, AWS Bedrock) to generate structured summaries, answer questions via RAG chatbot, and browse cached entity data.
+
+## Entrypoint
+
+```bash
+pip install -r requirements.txt
+python main.py
+```
+
+Runs uvicorn on `http://localhost:8000` by default. PostgreSQL must be running locally (config via `.env`).
+
+## Architecture
+
+```
+main.py
+├── routes/
+│   ├── summarise.py      — /summarise, /cache/update, /cached-ids
+│   ├── browse.py         — /browse, /browse/projects, /browse/entity
+│   ├── comments.py       — /comments/{id}, /entity/{id}/relations, /entity/{id}/data
+│   ├── settings.py       — /settings (LLM, prompts, cache mgmt, backfills, cache-range)
+│   ├── search.py         — /search
+│   ├── chat.py           — /chat (RAG Q&A)
+│   └── rag.py            — /rag (reindex, find-fixes)
+├── shared/
+│   ├── api.py            — TP API v1/v2 calls (comments, entity data, relations, projects)
+│   ├── analysis.py       — LLM prompt templates and summarisation logic
+│   ├── config.py         — .env config loader, LLM provider config
+│   ├── llm_providers.py  — BaseLLMProvider, LocalLLMProvider, CloudLLMProvider, LLMClient
+│   └── prompt_chain_executor.py — multi-step prompt chains
+├── database.py           — PostgreSQL CRUD (psycopg2, all tables)
+├── jinja_env.py          — Jinja2 template environment
+└── templates/            — Jinja2 HTML templates (base, index, browse, comments, settings, search, chat)
+```
+
+## Database (PostgreSQL + pgvector)
+
+All tables under `public` schema:
+
+| Table | Purpose | Vector-enabled |
+|-------|---------|---------------|
+| `comments` | Raw TP API comments per entity | No |
+| `summaries` | LLM-generated summary blobs | No |
+| `entity_data` | Entity metadata (description, state, project, 9 custom field columns + JSONB) | No |
+| `entity_relations` | Links between entities (one level deep) | No |
+| `request_custom_fields` | Legacy table (still populated) | No |
+| `embeddings` | Vector embeddings for RAG, vector(1536) column | Yes (pgvector `<->` operator) |
+| `chat_history` | Chat session messages | No |
+| `prompts` | Prompt templates | No |
+| `prompt_chains` | Multi-step prompt chain definitions | No |
+| `prompt_chain_steps` | Individual steps within prompt chains | No |
+| `prompt_chain_runs` | Execution records for prompt chains | No |
+| `prompt_chain_run_steps` | Per-step execution results | No |
+
+Embedding dimension normalised to 1536. Cosine distance via pgvector `<->` operator.
+
+## Routes
+
+All routes are defined under their respective router in `routes/`. The `main.py` prefixes them with empty string (i.e. paths are as listed).
+
+### Summarise (`/`)
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/` | Summarise page |
+| POST | `/summarise` | LLM summarisation for list of entity IDs |
+| POST | `/cache/update` | Update comment cache for specific IDs (smart/force) |
+| GET | `/cached-ids` | All cached request IDs |
+
+### Browse (`/browse`)
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/browse` | Browse page with project → type → entity drill-down |
+| GET | `/browse/projects` | Distinct cached projects (id + name) |
+| GET | `/browse/projects/{project_id}/types` | Entity types in a project |
+| GET | `/browse/projects/{project_id}/{entity_type}` | Entities list for a project+type |
+| GET | `/browse/entity/{entity_id}` | Entity detail JSON (metadata + relations) |
+
+### Comments (`/comments`)
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/comments/{id}` | Comments page for an entity |
+| GET | `/entity/{id}/relations` | JSON: relations for entity |
+| GET | `/entity/{id}/data` | JSON: entity_data for entity |
+
+### Settings (`/settings`)
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/settings` | Settings page |
+| POST | `/settings/llm` | Save LLM provider config |
+| POST | `/settings/test-connection` | Test LLM connectivity |
+| GET | `/settings/prompts` | Prompt list (HTML) |
+| GET | `/settings/prompts/{name}` | Prompt content (JSON) |
+| POST | `/settings/prompts` | Save prompt |
+| POST | `/settings/prompts/reset/{name}` | Reset prompt to default |
+| GET | `/settings/cache-stats` | Row counts for all data tables |
+| GET | `/settings/health` | DB health (rows, orphans, indexes, size) |
+| POST | `/settings/optimise` | VACUUM ANALYZE + orphan cleanup |
+| POST | `/settings/clear-summaries` | Delete all summaries |
+| POST | `/settings/clear-entity-data` | Delete all entity_data |
+| POST | `/settings/clear-entity-relations` | Delete all entity_relations |
+| POST | `/settings/clear-chat-history` | Delete all chat history |
+| POST | `/settings/clear-all-cache` | Delete ALL cached data (FK-safe order) |
+| POST | `/settings/backfill-metadata` | SSE: backfill entity_data for entities missing it |
+| GET | `/settings/backfill-status` | Backfill progress |
+| POST | `/settings/backfill-stop` | Stop metadata backfill |
+| POST | `/settings/backfill-project-names` | SSE: fetch all project names, backfill NULLs |
+| GET | `/settings/backfill-project-names-status` | Project name backfill progress |
+| POST | `/settings/backfill-project-names-stop` | Stop project name backfill |
+| POST | `/settings/cache-range` | SSE: cache a range of entity IDs (smart/force) |
+| POST | `/settings/cache-range-stop` | Stop cache range operation |
+
+### Search (`/search`)
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/search` | Search page |
+| POST | `/search` | Search cached comments with filters |
+
+### Chat (`/chat`)
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/chat` | Chatbot page |
+| POST | `/chat/send` | RAG Q&A endpoint (stateful, 6-turn context, company filter) |
+
+### RAG (`/rag`)
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/rag/reindex-missing` | SSE: generate embeddings for entities missing them |
+| POST | `/rag/reindex-all` | SSE: regenerate all embeddings |
+| GET | `/rag/reindex-status` | Reindex progress |
+| POST | `/rag/reindex-stop` | Stop reindex |
+| POST | `/rag/find-fixes` | Find similar resolved tickets and synthesise fix instructions |
+
+## Key Modules
+
+### `shared/api.py` — TP API interaction
+| Function | Description |
+|----------|-------------|
+| `get_comments(entity_id, use_cache=True)` | Fetch comments from TP v2 API or local cache |
+| `get_entity_data(entity_id, entity_type)` | Fetch entity metadata from TP v1 API (XML, ElementTree, namespace-agnostic). Extracts description, state, project, dates, custom fields (9 mapped to SQL columns). |
+| `get_entity_type(entity_id)` | Discover entity type via v2 `/Assignables` |
+| `get_all_projects()` | Fetch all projects via v2 `/Project` |
+| `get_relations(entity_id)` | Fetch relations via v2 `/Relation` with pagination |
+| `refresh_entity_metadata(entity_id, depth=0, seen=set)` | Standalone fetch+save of entity_data and relations. Recurses one level into direct relations with cycle detection. Skips unsupported types (Period, Timesheet) without API calls. |
+
+### `database.py` — PostgreSQL CRUD
+| Function | Description |
+|----------|-------------|
+| `save_entity_data(entity_id, entity_type, ...)` | Upsert entity_data row with all columns + custom_fields JSONB |
+| `get_entity_data(entity_id)` | Fetch entity_data row (parsed JSONB) |
+| `save_relations(entity_id, entity_type, relations)` | Replace relations for entity (DELETE + INSERT) |
+| `get_relations(entity_id)` | Fetch relations for entity from DB |
+| `get_cached_projects()` | Distinct project_id/project_name pairs |
+| `get_entities_by_project_and_type(project_id, entity_type)` | Entity list for project+type |
+| `get_cache_counts()` | Row counts for all data tables |
+| `check_database_health()` | Row counts, orphans, indexes, DB size |
+| `optimise_database()` | VACUUM ANALYZE + orphan cleanup |
+| `clear_entity_data()` / `clear_entity_relations()` / `clear_all_chat_history()` / `clear_all_cached_data()` | Targeted deletion |
+
+### `shared/llm_providers.py` — LLM abstraction
+- `BaseLLMProvider` → `LocalLLMProvider` (Ollama, LM Studio) / `CloudLLMProvider` (OpenAI-compat, AWS Bedrock)
+- `LLMClient` singleton manages provider selection at runtime
+- `generate_embedding()` uses the provider's native embedding API; dimension normalised to 1536
+
+### `shared/analysis.py` — Prompt templates
+- `summarise_comments()` — main summarisation prompt
+- `summarise_batch()` — batch summarisation
+- `summarise_search_results()` — search result synthesis
+
+## Settings: Cache Management
+
+The Settings page provides unified cache management:
+
+| Feature | Description |
+|---------|-------------|
+| **Cache Stats** | Live row counts for all 7 data tables |
+| **Health Check** | Row counts, orphan detection, index listing, DB size |
+| **Optimise** | VACUUM ANALYZE + orphan cleanup across all tables |
+| **Clear buttons** | Individual clear for Entity Data, Entity Relations, Summaries, Chat History; Clear All Cache (FK-safe order) |
+| **Entity Metadata Backfill** | SSE: find entities with comments but no entity_data; fetch+store metadata |
+| **Resolve Project Names** | SSE: single TP API call to get all projects; backfill NULL project_name values |
+| **Cache Range** | SSE: cache a range of entity IDs with progress. Smart = missing only + metadata refresh; Force = full re-fetch |
+
+## Cache Range Behaviour
+
+- **Smart mode**: Queries which IDs are already cached, skips them, refreshes entity_data for cached entities missing metadata. Reports separate counts for new fetches vs metadata-only refreshes.
+- **Force mode**: Deletes embeddings, re-fetches comments and entity metadata for every entity in range.
+
+## Unsupported Entity Types
+
+Entity types not in `V2_TO_V1_ENDPOINT` (e.g. Period, Timesheet) are skipped in `refresh_entity_metadata()` — no relations API call, logged at DEBUG level only.
+
+## Conventions
+
+- **UK English** (`-ise` not `-ize`): `summarise`, `optimise`, `analyse`, `initialise`, `normalise` across all code identifiers, route paths, templates, and DB prompt names
+- **PostgreSQL + pgvector** for vector storage and search
+- **Python 3.8+**, targeting 3.12
+- **No tests, no linter, no type checker, no CI** — utility app without a test harness
+
+## Important Constraints
+
+- Config via `.env` file (copy from `.env.example`); API keys stored base64 in `secure_config.json`
+- Changes to `.env.example` must stay in sync with `shared/config.py` env var names
+- No formal DB migration system — schema changes applied inline in `database.py:init_db()` with `CREATE TABLE IF NOT EXISTS` and `ALTER TABLE ADD COLUMN IF NOT EXISTS`
+- SSE streaming pattern used for all long-running operations (reindex, backfills, cache range)
