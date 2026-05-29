@@ -15,7 +15,7 @@ except ImportError:
 
 log_file = os.path.join(get_base_dir(), "tp_query_error.log")
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.WARNING,
     filename=log_file,
     format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
 )

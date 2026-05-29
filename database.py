@@ -90,12 +90,6 @@ def init_db():
 
     # ── comments table (add entity_type if missing) ──
     c.execute("""
-        SELECT column_name FROM information_schema.columns
-        WHERE table_name='comments' AND column_name='entity_type'
-    """)
-    if not c.fetchone():
-        c.execute("ALTER TABLE comments ADD COLUMN entity_type TEXT NOT NULL DEFAULT 'Request'")
-    c.execute("""
         CREATE TABLE IF NOT EXISTS comments (
             request_id INTEGER PRIMARY KEY,
             comment_data JSONB,
@@ -103,14 +97,14 @@ def init_db():
             entity_type TEXT NOT NULL DEFAULT 'Request'
         )
     """)
-
-    # ── summaries table (add entity_type if missing) ──
     c.execute("""
         SELECT column_name FROM information_schema.columns
-        WHERE table_name='summaries' AND column_name='entity_type'
+        WHERE table_name='comments' AND column_name='entity_type'
     """)
     if not c.fetchone():
-        c.execute("ALTER TABLE summaries ADD COLUMN entity_type TEXT NOT NULL DEFAULT 'Request'")
+        c.execute("ALTER TABLE comments ADD COLUMN entity_type TEXT NOT NULL DEFAULT 'Request'")
+
+    # ── summaries table (add entity_type if missing) ──
     c.execute("""
         CREATE TABLE IF NOT EXISTS summaries (
             request_id INTEGER PRIMARY KEY,
@@ -119,6 +113,12 @@ def init_db():
             entity_type TEXT NOT NULL DEFAULT 'Request'
         )
     """)
+    c.execute("""
+        SELECT column_name FROM information_schema.columns
+        WHERE table_name='summaries' AND column_name='entity_type'
+    """)
+    if not c.fetchone():
+        c.execute("ALTER TABLE summaries ADD COLUMN entity_type TEXT NOT NULL DEFAULT 'Request'")
 
     # ── Old request_custom_fields (migration target) ──
     c.execute("""
@@ -149,6 +149,17 @@ def init_db():
         logger.info("Migrated %d records from request_custom_fields to entity_data", c.rowcount)
 
     # ── embeddings table (add entity_type if missing) ──
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS embeddings (
+            id SERIAL PRIMARY KEY,
+            request_id INTEGER NOT NULL REFERENCES comments(request_id) ON DELETE CASCADE,
+            chunk_text TEXT NOT NULL,
+            embedding vector(1536),
+            chunk_type TEXT DEFAULT 'comment',
+            created_at TEXT,
+            entity_type TEXT NOT NULL DEFAULT 'Request'
+        )
+    """)
     c.execute("""
         SELECT column_name FROM information_schema.columns
         WHERE table_name='embeddings' AND column_name='entity_type'
@@ -228,17 +239,6 @@ def init_db():
         )
         if not c.fetchone():
             c.execute(f"ALTER TABLE prompt_chain_run_steps ADD COLUMN {col} {col_type}")
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS embeddings (
-            id SERIAL PRIMARY KEY,
-            request_id INTEGER NOT NULL REFERENCES comments(request_id) ON DELETE CASCADE,
-            chunk_text TEXT NOT NULL,
-            embedding vector(1536),
-            chunk_type TEXT DEFAULT 'comment',
-            created_at TEXT,
-            entity_type TEXT NOT NULL DEFAULT 'Request'
-        )
-    """)
     c.execute("""
         CREATE TABLE IF NOT EXISTS chat_history (
             id SERIAL PRIMARY KEY,
