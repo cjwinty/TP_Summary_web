@@ -1,0 +1,385 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+<div class="settings-layout" x-data="settingsData()"
+     data-provider-type="{{ llm_provider_type }}"
+     data-local-provider="{{ local_provider }}"
+     data-local-model="{{ local_model }}"
+     data-local-host="{{ local_host }}"
+     data-cloud-type="{{ cloud_type }}"
+     data-cloud-endpoint="{{ cloud_endpoint }}"
+     data-cloud-model="{{ cloud_model }}"
+     data-aws-region="{{ aws_region }}"
+     data-embedding-endpoint="{{ embedding_endpoint }}"
+     data-embedding-model="{{ embedding_model }}">
+    <h1>Settings</h1>
+
+    <section class="card">
+        <h3>LLM Settings</h3>
+        <div class="form-row">
+            <label>Provider:</label>
+            <label><input type="radio" name="provider" value="local" x-model="provider"> Local</label>
+            <label><input type="radio" name="provider" value="cloud" x-model="provider"> Cloud</label>
+        </div>
+
+        <template x-if="provider === 'local'">
+            <div>
+                <div class="form-row">
+                    <label>Provider:</label>
+                    <select class="input" x-model="localProvider">
+                        <option>Ollama</option>
+                        <option>LM Studio</option>
+                    </select>
+                </div>
+                <div class="form-row">
+                    <label>Model:</label>
+                    <input type="text" class="input" x-model="localModel" placeholder="llama3.2">
+                </div>
+                <div class="form-row">
+                    <label>Host:</label>
+                    <input type="text" class="input" x-model="localHost" placeholder="localhost">
+                </div>
+                <div class="form-row">
+                    <label>Embedding Model:</label>
+                    <input type="text" class="input" x-model="embeddingModel" placeholder="auto">
+                </div>
+            </div>
+        </template>
+
+        <template x-if="provider === 'cloud'">
+            <div>
+                <div class="form-row">
+                    <label>Cloud Type:</label>
+                    <select class="input" x-model="cloudType"
+                            @change="if(cloudType === 'bedrock') { cloudEndpoint = ''; } else if (cloudType === 'openai' && !cloudEndpoint) { cloudEndpoint = 'https://api.openai.com/v1/chat/completions'; }">
+                        <option value="openai">OpenAI Compatible</option>
+                        <option value="bedrock">AWS Bedrock</option>
+                    </select>
+                </div>
+                <div class="form-row" x-show="cloudType !== 'bedrock'">
+                    <label>Endpoint:</label>
+                    <input type="text" class="input" x-model="cloudEndpoint"
+                           placeholder="https://api.openai.com/v1/chat/completions">
+                </div>
+                <div class="form-row">
+                    <label>API Key:</label>
+                    <input type="password" class="input" x-model="cloudApiKey">
+                </div>
+                <div class="form-row">
+                    <label>Model:</label>
+                    <input type="text" class="input" x-model="cloudModel" placeholder="gpt-4">
+                </div>
+                <div class="form-row" x-show="cloudType !== 'bedrock'">
+                    <label>Embedding Endpoint (optional):</label>
+                    <input type="text" class="input" x-model="embeddingEndpoint" placeholder="auto">
+                </div>
+                <template x-if="cloudType === 'bedrock'">
+                    <div class="form-row">
+                        <label>AWS Region:</label>
+                        <input type="text" class="input" x-model="awsRegion" placeholder="us-east-1">
+                    </div>
+                </template>
+            </div>
+        </template>
+
+        <div class="btn-row">
+            <button class="btn btn-primary" @click="saveLLM()">Save</button>
+            <button class="btn btn-secondary" @click="testConnection()">Test Connection</button>
+        </div>
+        <p class="status-text" x-text="llmStatus"></p>
+    </section>
+
+    <section class="card">
+        <h3>Prompt Management</h3>
+        <div id="prompt-list" hx-get="/settings/prompts" hx-trigger="load" hx-swap="innerHTML"></div>
+        <div class="form-row">
+            <label>Content:</label>
+            <textarea class="input textarea" id="prompt-content" rows="6"></textarea>
+        </div>
+        <div class="btn-row">
+            <button class="btn btn-primary" id="save-prompt-btn">Save Changes</button>
+            <button class="btn btn-secondary" id="reset-prompt-btn">Reset to Default</button>
+        </div>
+    </section>
+
+    <section class="card" id="cache-section">
+        <h3>Cache Management</h3>
+        <div id="cache-stats" hx-get="/settings/cache-stats" hx-trigger="load" hx-swap="innerHTML"></div>
+        <div class="btn-row">
+            <button class="btn btn-danger" @click="clearSummaries()">Clear Summaries</button>
+            <button class="btn btn-secondary" @click="healthCheck()">Check Health</button>
+            <button class="btn btn-secondary" @click="optimizeDB()">Optimize DB</button>
+        </div>
+        <div id="health-results" x-show="healthData" style="padding: 10px 0;">
+            <div class="step-card" style="font-size:0.9em;">
+                <p><strong>Status:</strong>
+                    <span :class="'health-' + healthData.status" x-text="healthData.status.toUpperCase()"></span>
+                    &nbsp;|&nbsp; <strong>Size:</strong> <span x-text="healthData.db_size_mb.toFixed(1) + ' MB'"></span>
+                </p>
+                <p><strong>Rows:</strong>
+                    Comments: <span x-text="healthData.row_counts.comments.toLocaleString()"></span> |
+                    Summaries: <span x-text="healthData.row_counts.summaries.toLocaleString()"></span> |
+                    Custom Fields: <span x-text="healthData.row_counts.request_custom_fields.toLocaleString()"></span> |
+                    Embeddings: <span x-text="healthData.row_counts.embeddings.toLocaleString()"></span>
+                </p>
+                <p><strong>Indexes:</strong> <span x-text="healthData.index_count"></span></p>
+                <template x-if="healthData.orphan_fields > 0">
+                    <p><strong>Orphan Fields:</strong> <span x-text="healthData.orphan_fields + ' (' + healthData.orphan_percentage + '%)'"></span></p>
+                </template>
+                <template x-if="healthData.orphan_embeddings > 0">
+                    <p><strong>Orphan Embeddings:</strong> <span x-text="healthData.orphan_embeddings + ' (' + healthData.orphan_embedding_percentage + '%)'"></span></p>
+                </template>
+                <div x-show="healthData.messages && healthData.messages.length">
+                    <p><strong>Messages:</strong></p>
+                    <ul style="margin:4px 0 0 16px;">
+                        <template x-for="msg in healthData.messages" :key="msg">
+                            <li x-text="msg"></li>
+                        </template>
+                    </ul>
+                </div>
+            </div>
+        </div>
+        <div class="btn-row" style="margin-top: 8px;">
+            <select class="input" x-model="reindexMode" style="width:auto;" x-bind:disabled="reindexRunning">
+                <option value="missing">Add Missing</option>
+                <option value="full">Full Reindex</option>
+            </select>
+            <button class="btn btn-primary" @click="reindex()" id="reindex-btn" style="margin-left:6px;" x-show="!reindexRunning">Go</button>
+            <button class="btn btn-danger" @click="stopReindex()" id="reindex-stop-btn" style="margin-left:6px;" x-show="reindexRunning">Stop</button>
+        </div>
+        <div id="reindex-progress-area" x-show="reindexRunning || reindexDone" style="padding: 8px 0;">
+            <div style="display:flex; align-items:center; gap:8px;">
+                <div class="progress-bar" style="flex:1;">
+                    <div class="progress-fill" id="reindex-bar-fill" style="width:0%;"></div>
+                </div>
+                <span id="reindex-pct" class="progress-label" style="min-width:40px;">0%</span>
+            </div>
+            <p class="status-text" id="reindex-status"></p>
+        </div>
+        <p class="status-text" id="cache-status" x-text="cacheStatus"></p>
+    </section>
+</div>
+
+<script>
+function settingsData() {
+    const el = document.querySelector('.settings-layout');
+    return {
+        provider: el?.dataset.providerType || 'local',
+        localProvider: el?.dataset.localProvider || 'Ollama',
+        localModel: el?.dataset.localModel || 'llama3.2',
+        localHost: el?.dataset.localHost || 'localhost',
+        cloudType: el?.dataset.cloudType || 'openai',
+        cloudEndpoint: el?.dataset.cloudEndpoint || '',
+        cloudApiKey: '',
+        cloudModel: el?.dataset.cloudModel || 'gpt-4',
+        awsRegion: el?.dataset.awsRegion || 'us-east-1',
+        embeddingEndpoint: el?.dataset.embeddingEndpoint || '',
+        embeddingModel: el?.dataset.embeddingModel || '',
+        reindexMode: 'missing',
+        reindexRunning: false,
+        reindexDone: false,
+        llmStatus: '',
+        cacheStatus: '',
+        healthData: null,
+        async healthCheck() {
+            this.cacheStatus = 'Checking health...';
+            try {
+                const resp = await fetch('/settings/health');
+                const data = await resp.json();
+                this.healthData = data;
+                this.cacheStatus = data.status === 'healthy' ? 'Database is healthy.' : data.messages?.[0] || 'Issues found.';
+            } catch (e) {
+                this.cacheStatus = 'Health check failed: ' + e;
+            }
+        },
+        async clearSummaries() {
+            if (!confirm('Clear all cached summaries? This cannot be undone.')) return;
+            this.cacheStatus = 'Clearing summaries...';
+            try {
+                const resp = await fetch('/settings/clear-summaries', { method: 'POST' });
+                const data = await resp.json();
+                this.cacheStatus = data.message || 'Summaries cleared.';
+                fetch('/settings/cache-stats').then(r => r.text()).then(html => {
+                    const el = document.getElementById('cache-stats');
+                    if (el) el.innerHTML = html;
+                });
+            } catch (e) {
+                this.cacheStatus = 'Error: ' + e;
+            }
+        },
+        async optimizeDB() {
+            if (!confirm('Optimize database?\n\nThis will remove orphan records and run VACUUM ANALYZE.')) return;
+            this.cacheStatus = 'Optimizing...';
+            try {
+                const resp = await fetch('/settings/optimize', { method: 'POST' });
+                const data = await resp.json();
+                this.cacheStatus = data.message || 'Optimization complete.';
+                fetch('/settings/cache-stats').then(r => r.text()).then(html => {
+                    const el = document.getElementById('cache-stats');
+                    if (el) el.innerHTML = html;
+                });
+            } catch (e) {
+                this.cacheStatus = 'Error: ' + e;
+            }
+        },
+        async init() {
+            // Check if a reindex is already running server-side
+            try {
+                const resp = await fetch('/rag/reindex-status');
+                const data = await resp.json();
+                if (data.running) {
+                    this.reindexRunning = true;
+                    this.reindexDone = false;
+                    this._setReindexUI(data);
+                    this._pollReindexStatus();
+                }
+            } catch (_) {}
+        },
+        _setReindexUI(data) {
+            const barFill = document.getElementById('reindex-bar-fill');
+            const pct = document.getElementById('reindex-pct');
+            const status = document.getElementById('reindex-status');
+            const curPct = data.total > 0 ? Math.round(data.current / data.total * 100) : 0;
+            if (barFill) barFill.style.width = curPct + '%';
+            if (pct) pct.textContent = curPct + '%';
+            if (status) status.textContent = data.message || 'Reindex in progress...';
+        },
+        _pollReindexStatus() {
+            setTimeout(async () => {
+                try {
+                    const resp = await fetch('/rag/reindex-status');
+                    const data = await resp.json();
+                    if (data.running) {
+                        this._setReindexUI(data);
+                        this._pollReindexStatus();
+                    } else {
+                        this.reindexRunning = false;
+                        this.reindexDone = true;
+                        const barFill = document.getElementById('reindex-bar-fill');
+                        const pct = document.getElementById('reindex-pct');
+                        const status = document.getElementById('reindex-status');
+                        if (barFill) barFill.style.width = '100%';
+                        if (pct) pct.textContent = '100%';
+                        if (status) status.textContent = data.message || 'Reindex complete.';
+                        fetch('/settings/cache-stats').then(r => r.text()).then(html => {
+                            const el = document.getElementById('cache-stats');
+                            if (el) el.innerHTML = html;
+                        });
+                    }
+                } catch (_) {
+                    this._pollReindexStatus();
+                }
+            }, 2000);
+        },
+        saveLLM() {
+            const payload = { provider_type: this.provider, embedding_model: this.embeddingModel };
+            if (this.provider === 'local') {
+                payload.local_provider = this.localProvider;
+                payload.model = this.localModel;
+                payload.host = this.localHost;
+            } else {
+                payload.cloud_type = this.cloudType;
+                payload.endpoint = this.cloudEndpoint;
+                if (this.cloudApiKey) payload.api_key = this.cloudApiKey;
+                payload.model = this.cloudModel;
+                payload.embedding_endpoint = this.embeddingEndpoint;
+                if (this.cloudType === 'bedrock') payload.aws_region = this.awsRegion;
+            }
+            fetch('/settings/llm', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) })
+                .then(r => r.json()).then(d => { this.llmStatus = d.message || d.error || 'Error'; });
+        },
+        testConnection() {
+            this.llmStatus = 'Testing...';
+            const payload = { provider_type: this.provider, embedding_model: this.embeddingModel };
+            if (this.provider === 'local') {
+                payload.local_provider = this.localProvider;
+                payload.model = this.localModel;
+                payload.host = this.localHost;
+            } else {
+                payload.cloud_type = this.cloudType;
+                payload.endpoint = this.cloudEndpoint;
+                if (this.cloudApiKey) payload.api_key = this.cloudApiKey;
+                payload.model = this.cloudModel;
+                payload.embedding_endpoint = this.embeddingEndpoint;
+                if (this.cloudType === 'bedrock') payload.aws_region = this.awsRegion;
+            }
+            fetch('/settings/test-connection', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) })
+                .then(r => r.json()).then(d => { this.llmStatus = d.message || d.error || 'Error'; });
+        },
+        async reindex() {
+            const endpoint = this.reindexMode === 'full' ? '/rag/reindex-all' : '/rag/reindex-missing';
+            const barFill = document.getElementById('reindex-bar-fill');
+            const pct = document.getElementById('reindex-pct');
+            const status = document.getElementById('reindex-status');
+
+            this.reindexRunning = true;
+            this.reindexDone = false;
+            if (barFill) barFill.style.width = '0%';
+            if (pct) pct.textContent = '0%';
+            if (status) status.textContent = this.reindexMode === 'full' ? 'Starting full reindex...' : 'Starting missing reindex...';
+
+            try {
+                const resp = await fetch(endpoint, { method: 'POST' });
+                if (!resp.ok) {
+                    const errData = await resp.json();
+                    if (resp.status === 400 && errData.error === 'Reindex already running.') {
+                        // Server-side reindex is still going; switch to running UI
+                        this.reindexRunning = true;
+                        const statusResp = await fetch('/rag/reindex-status');
+                        const statusData = await statusResp.json();
+                        this._setReindexUI(statusData);
+                        this._pollReindexStatus();
+                    } else {
+                        if (status) status.textContent = errData.error || 'Error';
+                    }
+                    return;
+                }
+                const reader = resp.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+
+                    for (const line of lines) {
+                        if (!line.startsWith('data: ')) continue;
+                        const data = JSON.parse(line.slice(6));
+                        if (data.type === 'progress') {
+                            const p = data.percent || 0;
+                            if (barFill) barFill.style.width = p + '%';
+                            if (pct) pct.textContent = p + '%';
+                            if (status) status.textContent = 'Processing request #' + data.request_id + ' (' + data.count + '/' + data.total + ')';
+                        } else if (data.type === 'status') {
+                            if (status) status.textContent = data.message;
+                        } else if (data.type === 'done') {
+                            if (status) status.textContent = data.message;
+                            if (barFill) barFill.style.width = '100%';
+                            if (pct) pct.textContent = '100%';
+                        }
+                    }
+                }
+            } catch (e) {
+                if (status) status.textContent = 'Error: ' + e;
+            } finally {
+                this.reindexRunning = false;
+                this.reindexDone = true;
+                // Refresh cache stats
+                fetch('/settings/cache-stats').then(r => r.text()).then(html => {
+                    const el = document.getElementById('cache-stats');
+                    if (el) el.innerHTML = html;
+                });
+            }
+        },
+        stopReindex() {
+            const status = document.getElementById('reindex-status');
+            if (status) status.textContent = 'Requesting stop...';
+            fetch('/rag/reindex-stop', { method: 'POST' }).catch(() => {});
+        }
+    };
+}
+</script>
+{% endblock %}

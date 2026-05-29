@@ -1,0 +1,7 @@
+{
+  "llm_provider_type": "cloud",
+  "llm_cloud_provider": "bedrock",
+  "llm_aws_region": "eu-west-1",
+  "llm_cloud_model": "eu.amazon.nova-pro-v1:0",
+  "embedding_model": ""
+}

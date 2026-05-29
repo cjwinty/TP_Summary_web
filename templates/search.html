@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% block title %}Search Cache{% endblock %}
+{% block content %}
+<div class="search-layout" x-data="searchData()">
+    <h1>Search Cache</h1>
+
+    <section class="card">
+        <div class="search-row">
+            <label>Search:</label>
+            <input type="text" class="input" x-model="query" @keydown.enter="doSearch()" style="width:300px">
+            <button class="btn btn-primary" @click="doSearch()">Search</button>
+            <button class="btn btn-danger" @click="cancelSearch()" x-show="searching">Cancel</button>
+        </div>
+
+        <div class="checkbox-row">
+            <label><input type="checkbox" x-model="refine"> LLM Query Refinement</label>
+            <label><input type="checkbox" x-model="skipSummary"> Skip LLM Summary</label>
+            <label><input type="checkbox" x-model="fullFetch"> Full Record Retrieval</label>
+            <label><input type="checkbox" x-model="customPromptEnabled"> Append Custom Prompt</label>
+        </div>
+
+        <template x-if="customPromptEnabled">
+            <input type="text" class="input" x-model="customPrompt" placeholder="Custom prompt..." style="width:400px">
+        </template>
+
+        <div class="filter-row">
+            <div id="filters-container">
+                <template x-for="(f, i) in filters" :key="i">
+                    <div class="filter-item">
+                        <input type="text" class="input" x-model="f.field" placeholder="Field" style="width:120px">
+                        <input type="text" class="input" x-model="f.value" placeholder="Value" style="width:200px">
+                        <select class="input" x-model="f.logic" style="width:60px">
+                            <option>AND</option>
+                            <option>OR</option>
+                        </select>
+                        <button class="btn-small btn-danger" @click="removeFilter(i)">×</button>
+                    </div>
+                </template>
+            </div>
+            <button class="btn btn-secondary" @click="addFilter()">+ Add Filter</button>
+            <button class="btn btn-secondary" @click="clearFilters()">Clear All</button>
+        </div>
+
+        <div class="date-row">
+            <label>From:</label>
+            <input type="date" class="input" x-model="dateFrom">
+            <label>To:</label>
+            <input type="date" class="input" x-model="dateTo">
+            <button class="btn btn-secondary" @click="dateFrom=''; dateTo=''">Clear Dates</button>
+        </div>
+    </section>
+
+    <p class="status-text" x-text="status"></p>
+
+    <div class="two-pane">
+        <div class="pane-top results-box" id="search-results">
+            <pre x-text="resultsText || 'Enter a query and click Search.'"></pre>
+        </div>
+        <div class="pane-bottom results-box" id="search-summary">
+            <pre x-text="summaryText || 'LLM summary will appear here.'"></pre>
+        </div>
+    </div>
+</div>
+
+<script>
+function searchData() {
+    return {
+        query: '',
+        refine: true,
+        skipSummary: false,
+        fullFetch: false,
+        customPromptEnabled: false,
+        customPrompt: '',
+        dateFrom: '',
+        dateTo: '',
+        filters: [],
+        searching: false,
+        status: 'Ready',
+        resultsText: '',
+        summaryText: '',
+        abortController: null,
+        addFilter() { this.filters.push({field:'', value:'', logic:'AND'}); },
+        removeFilter(i) { this.filters.splice(i, 1); if (!this.filters.length) this.addFilter(); },
+        clearFilters() { this.filters = []; this.addFilter(); this.dateFrom=''; this.dateTo=''; },
+        doSearch() {
+            if (!this.query.trim()) return;
+            this.searching = true;
+            this.status = 'Searching...';
+            this.resultsText = '';
+            this.summaryText = '';
+            this.abortController = new AbortController();
+            const payload = {
+                query: this.query,
+                refine: this.refine,
+                skip_summary: this.skipSummary,
+                full_fetch: this.fullFetch,
+                custom_prompt: this.customPromptEnabled ? this.customPrompt : '',
+                date_from: this.dateFrom,
+                date_to: this.dateTo,
+                filters: this.filters.filter(f => f.field && f.value),
+            };
+            fetch('/search', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(payload),
+                signal: this.abortController.signal,
+            }).then(r => r.json()).then(d => {
+                this.resultsText = d.results;
+                this.summaryText = d.summary || '';
+                this.status = d.status || 'Done';
+                this.searching = false;
+            }).catch(e => {
+                if (e.name !== 'AbortError') {
+                    this.status = 'Error: ' + e.message;
+                    this.searching = false;
+                }
+            });
+        },
+        cancelSearch() {
+            if (this.abortController) this.abortController.abort();
+            this.searching = false;
+            this.status = 'Cancelled.';
+        }
+    };
+}
+</script>
+{% endblock %}

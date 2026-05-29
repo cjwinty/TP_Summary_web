@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TP Query - {% block title %}Home{% endblock %}</title>
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <script src="https://unpkg.com/htmx-ext-sse@2.0.0/sse.js"></script>
+    <script src="https://unpkg.com/htmx-ext-response-targets@2.0.0/response-targets.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.8/dist/cdn.min.js"></script>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body x-data="{ sidebarOpen: window.innerWidth > 768 }" class="app-body"
+      @resize.window="sidebarOpen = window.innerWidth > 768">
+    <div class="app-layout">
+        {% if not hide_sidebar %}
+        <aside class="sidebar" x-show="sidebarOpen" x-transition>
+            <div class="sidebar-header">
+                <h2>Support Call<br>Summariser</h2>
+                <p class="version-text">v{{ version }}</p>
+                <p class="project-name">{{ project_name }}</p>
+            </div>
+            <nav class="sidebar-nav">
+                <a href="/" class="nav-item">Summarize</a>
+                <a href="/settings" class="nav-item">Settings</a>
+                <a href="/comments" class="nav-item">Cached Comments</a>
+                <a href="/summaries" class="nav-item">Saved Summaries</a>
+                <a href="/search" class="nav-item">Search Cache</a>
+                <a href="/chains" class="nav-item">Chain Builder</a>
+                <a href="/chat" class="nav-item">Chatbot</a>
+                <a href="/browse" class="nav-item">Browse</a>
+            </nav>
+        </aside>
+        <button class="sidebar-toggle" @click="sidebarOpen = !sidebarOpen">☰</button>
+        {% endif %}
+        <main class="main-content">
+            {% block content %}{% endblock %}
+        </main>
+    </div>
+    <div id="toast" style="display:none;position:fixed;top:16px;right:16px;z-index:999;max-width:400px"
+         class="alert alert-error"></div>
+    <script>
+        document.body.addEventListener('htmx:responseError', function(evt) {
+            var t = document.getElementById('toast');
+            t.textContent = 'Error: ' + (evt.detail.xhr.responseText || evt.detail.xhr.statusText).substring(0,200);
+            t.style.display = 'block';
+            setTimeout(function(){ t.style.display = 'none'; }, 5000);
+        });
+    </script>
+</body>
+</html>

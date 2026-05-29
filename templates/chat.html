@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block title %}Chatbot{% endblock %}
+{% block content %}
+<div class="chat-container" x-data="chatBot()" x-init="init('{{ session_id }}')">
+    <h2>TP Query Chatbot</h2>
+
+    <div class="chat-controls">
+        <label>
+            Company (optional):
+            <input type="text" id="client-field" x-model="client" placeholder="e.g. Acme Corp">
+        </label>
+        <button @click="clearChat()" class="btn btn-secondary">Clear</button>
+    </div>
+
+    <div class="chat-messages" x-ref="messages">
+        <template x-for="msg in messages" :key="msg.id">
+            <div class="chat-msg" :class="'chat-msg-' + msg.role">
+                <div class="chat-msg-label" x-text="msg.role === 'user' ? 'You' : 'TP Bot'"></div>
+                <div class="chat-msg-content" x-text="msg.content"></div>
+                <div class="chat-msg-sources" x-show="msg.sources && msg.sources.length > 0"
+                     x-text="'Sources: ' + msg.sources.join(', ')"></div>
+            </div>
+        </template>
+        <div x-show="loading" class="chat-msg chat-msg-assistant">
+            <div class="chat-msg-label">TP Bot</div>
+            <div class="chat-msg-content typing-indicator">Thinking<span>.</span><span>.</span><span>.</span></div>
+        </div>
+    </div>
+
+    <form class="chat-input-row" @submit.prevent="sendMessage()">
+        <input type="text" x-model="input" placeholder="Ask a question about resolved tickets..."
+               class="chat-input" :disabled="loading">
+        <button type="submit" class="btn btn-primary" :disabled="loading || !input.trim()">Send</button>
+    </form>
+</div>
+
+<style>
+.chat-container { max-width: 800px; margin: 0 auto; padding: 16px; display: flex; flex-direction: column; height: calc(100vh - 80px); }
+.chat-controls { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.chat-controls label { font-size: 13px; color: #888; }
+.chat-controls input { margin-left: 6px; padding: 4px 8px; border: 1px solid #444; border-radius: 4px; background: #2a2a2a; color: #ddd; }
+.chat-messages { flex: 1; overflow-y: auto; padding: 12px; background: #1e1e1e; border-radius: 8px; margin-bottom: 12px; }
+.chat-msg { margin-bottom: 12px; padding: 8px 12px; border-radius: 8px; max-width: 85%; }
+.chat-msg-user { background: #2b5278; margin-left: auto; }
+.chat-msg-assistant { background: #2a2a2a; }
+.chat-msg-label { font-size: 11px; font-weight: bold; color: #888; margin-bottom: 4px; }
+.chat-msg-content { line-height: 1.5; white-space: pre-wrap; }
+.chat-msg-sources { font-size: 11px; color: #5a8; margin-top: 4px; }
+.chat-input-row { display: flex; gap: 8px; }
+.chat-input { flex: 1; padding: 10px 12px; border: 1px solid #444; border-radius: 6px; background: #2a2a2a; color: #ddd; font-size: 14px; }
+.typing-indicator span { animation: blink 1.4s infinite both; }
+.typing-indicator span:nth-child(2) { animation-delay: 0.2s; }
+.typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes blink { 0% { opacity: 0.2; } 20% { opacity: 1; } 100% { opacity: 0.2; } }
+</style>
+
+<script>
+function chatBot() {
+    return {
+        sessionId: '',
+        client: '',
+        input: '',
+        loading: false,
+        messages: [],
+        init(sid) {
+            this.sessionId = sid;
+        },
+        async sendMessage() {
+            const text = this.input.trim();
+            if (!text || this.loading) return;
+            this.messages.push({ id: Date.now(), role: 'user', content: text, sources: [] });
+            this.input = '';
+            this.loading = true;
+            try {
+                const resp = await fetch('/chat/send', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: this.sessionId, message: text, client: this.client || null }),
+                });
+                const data = await resp.json();
+                if (data.reply) {
+                    this.messages.push({ id: Date.now() + 1, role: 'assistant', content: data.reply, sources: data.sources || [] });
+                } else if (data.error) {
+                    this.messages.push({ id: Date.now() + 1, role: 'assistant', content: 'Error: ' + data.error, sources: [] });
+                }
+            } catch (e) {
+                this.messages.push({ id: Date.now() + 1, role: 'assistant', content: 'Network error. Is the server running?', sources: [] });
+            }
+            this.loading = false;
+            this.$nextTick(() => {
+                const el = this.$refs.messages;
+                if (el) el.scrollTop = el.scrollHeight;
+            });
+        },
+        clearChat() {
+            this.messages = [];
+            this.sessionId = crypto.randomUUID();
+            this.client = '';
+        },
+    };
+}
+</script>
+{% endblock %}

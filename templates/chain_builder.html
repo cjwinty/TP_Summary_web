@@ -1,0 +1,180 @@
+{% extends "base.html" %}
+{% block title %}Chain Builder{% endblock %}
+{% block content %}
+<div class="chains-layout" x-data="chainData()">
+    <h1>Chain Builder</h1>
+    <div class="three-pane">
+        <div class="pane-left card">
+            <h3>Chains</h3>
+            <button class="btn btn-primary" @click="newChain()">+ New</button>
+            <div id="chain-list">
+                <template x-for="chain in chains" :key="chain.id">
+                    <div class="chain-item" @click="selectChain(chain.id)"
+                         :class="{'active': selectedId === chain.id}">
+                        <span x-text="chain.name"></span>
+                    </div>
+                </template>
+            </div>
+        </div>
+        <div class="pane-center card">
+            <div x-show="selectedId">
+                <div class="tab-row">
+                    <button class="tab" :class="{'active': tab === 'edit'}" @click="tab='edit'">Edit</button>
+                    <button class="tab" :class="{'active': tab === 'run'}" @click="tab='run'">Run</button>
+                    <button class="tab" :class="{'active': tab === 'history'}" @click="tab='history'">History</button>
+                </div>
+                <div x-show="tab === 'edit'">
+                    <div class="form-row">
+                        <label>Name:</label>
+                        <input type="text" class="input" x-model="editName">
+                    </div>
+                    <div class="form-row">
+                        <label>Description:</label>
+                        <textarea class="input textarea" x-model="editDescription" rows="2"></textarea>
+                    </div>
+                    <h4>Steps</h4>
+                    <template x-for="(step, i) in editSteps" :key="i">
+                        <div class="step-card">
+                            <div class="form-row"><label>Name:</label><input type="text" class="input" x-model="step.name"></div>
+                            <div class="form-row"><label>Prompt:</label><textarea class="input textarea" x-model="step.prompt" rows="3"></textarea></div>
+                            <div class="form-row"><label>Output Variable:</label><input type="text" class="input" x-model="step.output_var"></div>
+                            <button class="btn-small btn-danger" @click="removeStep(i)">×</button>
+                        </div>
+                    </template>
+                    <button class="btn btn-secondary" @click="addStep()">+ Add Step</button>
+                    <div class="btn-row">
+                        <button class="btn btn-primary" @click="saveChain()">Save</button>
+                        <button class="btn btn-danger" @click="deleteChain()">Delete</button>
+                    </div>
+                </div>
+                <div x-show="tab === 'run'">
+                    <div class="form-row">
+                        <label>Input:</label>
+                        <textarea class="input textarea" x-model="runInput" rows="3"></textarea>
+                    </div>
+                    <button class="btn btn-primary" @click="executeChain()">Run</button>
+                    <div class="results-box" x-html="runOutput"></div>
+                </div>
+                <div x-show="tab === 'history'">
+                    <div id="chain-history">
+                        <template x-for="run in history" :key="run.id">
+                            <div class="history-item" @click="viewRun(run.id)">
+                                <span x-text="'Run #' + run.id + ' - ' + run.created_at"></span>
+                                <span x-text="run.status" :class="run.status"></span>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+            </div>
+            <div x-show="!selectedId">
+                <p class="status-text">Select or create a chain to begin.</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function chainData() {
+    return {
+        chains: [],
+        selectedId: null,
+        tab: 'edit',
+        editName: '',
+        editDescription: '',
+        editSteps: [],
+        runInput: '',
+        runOutput: '',
+        history: [],
+        init() {
+            this.loadChains();
+        },
+        loadChains() {
+            fetch('/chains.json').then(r => r.json()).then(d => { this.chains = d.chains || d; });
+        },
+        selectChain(id) {
+            this.selectedId = id;
+            this.tab = 'edit';
+            fetch('/chains/' + id).then(r => r.json()).then(d => {
+                this.editName = d.name;
+                this.editDescription = d.description || '';
+                this.editSteps = (d.steps || []).map(s => ({
+                    name: s.name, prompt: s.prompt_template, output_var: s.output_variable
+                }));
+            });
+            this.loadHistory(id);
+        },
+        loadHistory(id) {
+            fetch('/chains/' + id + '/runs').then(r => r.json()).then(d => { this.history = d.runs || d; });
+        },
+        newChain() {
+            this.selectedId = null;
+            this.editName = '';
+            this.editDescription = '';
+            this.editSteps = [];
+            this.tab = 'edit';
+        },
+        addStep() {
+            this.editSteps.push({name: '', prompt: '', output_var: ''});
+        },
+        removeStep(i) {
+            this.editSteps.splice(i, 1);
+        },
+        saveChain() {
+            const payload = {
+                name: this.editName,
+                description: this.editDescription,
+                steps: this.editSteps.map((s, i) => ({
+                    step_order: i + 1,
+                    name: s.name,
+                    prompt_template: s.prompt,
+                    output_variable: s.output_var,
+                })),
+            };
+            const url = this.selectedId ? '/chains/' + this.selectedId : '/chains';
+            const method = this.selectedId ? 'PUT' : 'POST';
+            fetch(url, { method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) })
+                .then(r => r.json()).then(() => this.loadChains());
+        },
+        deleteChain() {
+            if (!this.selectedId || !confirm('Delete this chain?')) return;
+            fetch('/chains/' + this.selectedId, { method: 'DELETE' }).then(() => {
+                this.selectedId = null;
+                this.loadChains();
+            });
+        },
+        executeChain() {
+            this.runOutput = 'Running...';
+            fetch('/chains/' + this.selectedId + '/run', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({input: this.runInput}),
+            }).then(r => r.json()).then(d => {
+                if (d.error) this.runOutput = '<pre>Error: ' + d.error + '</pre>';
+                else {
+                    let html = '';
+                    for (const step of d.steps) {
+                        html += '<h4>' + step.name + ' (' + step.status + ' - ' + step.duration_ms + 'ms)</h4>';
+                        html += '<pre>' + (step.output || '') + '</pre>';
+                    }
+                    html += '<h3>Final Output</h3><pre>' + d.final_output + '</pre>';
+                    this.runOutput = html;
+                }
+                this.loadHistory(this.selectedId);
+            });
+        },
+        viewRun(runId) {
+            fetch('/chains/' + this.selectedId + '/runs/' + runId).then(r => r.json()).then(d => {
+                let html = '';
+                for (const step of d.steps) {
+                    html += '<h4>' + step.name + ' (' + step.status + ' - ' + step.duration_ms + 'ms)</h4>';
+                    html += '<pre>' + (step.output || '') + '</pre>';
+                }
+                html += '<h3>Final Output</h3><pre>' + d.final_output + '</pre>';
+                this.runOutput = html;
+                this.tab = 'run';
+            });
+        },
+    };
+}
+</script>
+{% endblock %}

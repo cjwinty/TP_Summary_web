@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block title %}Browse{% endblock %}
+{% block content %}
+<div class="card" x-data="browseApp()" x-init="init()">
+    <h2>Browse Cached Entities</h2>
+    <p class="help-text">Select a project, then an entity type to view cached entities.</p>
+
+    <div style="display:flex;gap:1rem;margin-top:1rem;">
+        <div style="flex:1;">
+            <h3>Projects</h3>
+            <div style="max-height:400px;overflow-y:auto;">
+                <template x-for="p in projects">
+                    <div>
+                        <a href="#"
+                           @click.prevent="selectProject(p.project_id)"
+                           x-text="p.project_name"
+                           :class="selectedProjectId === p.project_id ? 'active' : ''"
+                           style="display:block;padding:4px 8px;text-decoration:none;cursor:pointer;">
+                        </a>
+                    </div>
+                </template>
+                <p x-show="!projects.length" class="help-text">No projects cached.</p>
+            </div>
+        </div>
+        <div style="flex:1;">
+            <h3>Types</h3>
+            <div style="max-height:400px;overflow-y:auto;">
+                <template x-for="t in types">
+                    <div>
+                        <a href="#"
+                           @click.prevent="selectType(t)"
+                           x-text="t"
+                           :class="selectedType === t ? 'active' : ''"
+                           style="display:block;padding:4px 8px;text-decoration:none;cursor:pointer;">
+                        </a>
+                    </div>
+                </template>
+            </div>
+        </div>
+        <div style="flex:2;">
+            <h3>Entities <span x-show="entities.length" x-text="`(${entities.length})`"></span></h3>
+            <div style="max-height:400px;overflow-y:auto;">
+                <template x-for="e in entities">
+                    <div style="border:1px solid var(--border);border-radius:6px;padding:8px;margin:4px 0;">
+                        <strong><span x-text="e.entity_type"></span> #<span x-text="e.id"></span>
+                            [<span x-text="e.state"></span>]</strong>
+                        <p style="margin:2px 0 0;font-size:0.9em;" x-text="e.description || '(no description)'"></p>
+                        <a :href="'/comments/' + e.id" class="btn btn-sm" style="float:right;">View</a>
+                    </div>
+                </template>
+                <p x-show="!entities.length && selectedType" class="help-text">No entities found.</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function browseApp() {
+    return {
+        projects: [],
+        types: [],
+        entities: [],
+        selectedProjectId: null,
+        selectedType: null,
+        async init() {
+            let r = await fetch('/browse/projects');
+            let d = await r.json();
+            this.projects = d.projects;
+        },
+        async selectProject(pid) {
+            this.selectedProjectId = pid;
+            this.selectedType = null;
+            this.entities = [];
+            let r = await fetch(`/browse/projects/${pid}/types`);
+            let d = await r.json();
+            this.types = d.types;
+        },
+        async selectType(t) {
+            this.selectedType = t;
+            let r = await fetch(`/browse/projects/${this.selectedProjectId}/${t}`);
+            let d = await r.json();
+            this.entities = d.entities;
+        }
+    }
+}
+</script>
+{% endblock %}
