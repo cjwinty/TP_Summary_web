@@ -2,7 +2,7 @@
 
 ## Required Reading
 
-**At the start of each session, read CONTEXT.md for the conceptual knowledge base.** This file (AGENTS.md) covers technical reference; CONTEXT.md covers the "why" behind the architecture, data sources, and how context is assembled.
+**At the start of each session, read AGENTS.md and CONTEXT.md in full.** This file (AGENTS.md) covers technical reference; CONTEXT.md covers the "why" behind the architecture, data sources, and how context is assembled. Both files must be in context before making any changes.
 
 ## What this is
 
@@ -218,6 +218,7 @@ Entity types not in `V2_TO_V1_ENDPOINT` (e.g. Period, Timesheet) are skipped in 
 - **PostgreSQL + pgvector** for vector storage and search
 - **Python 3.8+**, targeting 3.12
 - **No tests, no linter, no type checker, no CI** — utility app without a test harness
+- **Docs in sync with code**: Every commit that changes architecture, routes, key functions, config schema, or data flow must also update AGENTS.md and/or CONTEXT.md in the same commit
 
 ## Important Constraints
 
