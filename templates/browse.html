@@ -14,7 +14,7 @@
                         <a href="#"
                            @click.prevent="selectProject(p.project_id)"
                            x-text="p.project_name"
-                           :class="selectedProjectId === p.project_id ? 'active' : ''"
+                           :class="'browse-link ' + (selectedProjectId === p.project_id ? 'active' : '')"
                            style="display:block;padding:4px 8px;text-decoration:none;cursor:pointer;">
                         </a>
                     </div>
@@ -30,7 +30,7 @@
                         <a href="#"
                            @click.prevent="selectType(t)"
                            x-text="t"
-                           :class="selectedType === t ? 'active' : ''"
+                           :class="'browse-link ' + (selectedType === t ? 'active' : '')"
                            style="display:block;padding:4px 8px;text-decoration:none;cursor:pointer;">
                         </a>
                     </div>
@@ -90,7 +90,7 @@
                             <tbody>
                                 <template x-for="rel in selectedRelations" :key="rel.related_entity_id">
                                     <tr style="border-bottom:1px solid var(--border);">
-                                        <td style="padding:2px 6px;"><a :href="'/comments/' + rel.related_entity_id" x-text="'#' + rel.related_entity_id"></a></td>
+                                        <td style="padding:2px 6px;"><a class="browse-link" :href="'/comments/' + rel.related_entity_id" x-text="'#' + rel.related_entity_id"></a></td>
                                         <td style="padding:2px 6px;" x-text="rel.related_entity_type || 'Unknown'"></td>
                                         <td style="padding:2px 6px;" x-text="rel.related_entity_name || ''"></td>
                                         <td style="padding:2px 6px;" x-text="rel.related_entity_state || ''"></td>
@@ -107,6 +107,8 @@
 </div>
 
 <style>
+.browse-link { color: inherit; }
+.browse-link:hover { color: var(--accent); }
 .active-entity { background: var(--accent); color: var(--bg); }
 .active-entity a { color: var(--bg); }
 </style>
