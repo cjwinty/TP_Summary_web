@@ -6,11 +6,11 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
 from pydantic import BaseModel
 
-from shared.config import PROJECT_NAME, initialize_llm, logger
+from shared.config import PROJECT_NAME, initialise_llm, logger
 
 from shared.api import get_comments as api_get_comments, refresh_entity_metadata
 
-from shared.analysis import summarize_batch, deduplicate_comment_dicts
+from shared.analysis import summarise_batch, deduplicate_comment_dicts
 
 from database import (
     save_summary, get_summary_with_cache_time,
@@ -26,7 +26,7 @@ _cache_running = False
 _cache_stop = False
 
 
-class SummarizeRequest(BaseModel):
+class SummariseRequest(BaseModel):
     ids: str
     refresh: bool = False
 
@@ -51,8 +51,8 @@ async def index(request: Request):
     )
 
 
-@router.post("/summarize")
-async def summarize(req: SummarizeRequest):
+@router.post("/summarise")
+async def summarise(req: SummariseRequest):
     ids_text = req.ids.strip()
     if not ids_text:
         return JSONResponse({"error": "Please enter request IDs."}, status_code=400)
@@ -69,7 +69,7 @@ async def summarize(req: SummarizeRequest):
         yield f"data: {json.dumps({'type': 'status', 'message': f'Processing {len(request_ids)} requests...'})}\n\n"
 
         all_comments = []
-        request_ids_to_summarize = []
+        request_ids_to_summarise = []
         cached_count = fetched_count = 0
         error_ids = []
         empty_ids = []
@@ -105,7 +105,7 @@ async def summarize(req: SummarizeRequest):
                 unique_lines = deduplicate_comment_dicts(comments)
                 if unique_lines:
                     all_comments.append(f"[{et} #{request_id}]{source}:\n" + "\n".join(unique_lines))
-                    request_ids_to_summarize.append(request_id)
+                    request_ids_to_summarise.append(request_id)
 
         if not all_comments:
             msg = ""
@@ -118,21 +118,21 @@ async def summarize(req: SummarizeRequest):
             return
 
         yield f"data: {json.dumps({'type': 'result', 'text': f'Using {cached_count} cached, {fetched_count} fresh\n\n'})}\n\n"
-        yield f"data: {json.dumps({'type': 'status', 'message': f'Summarizing {len(all_comments)} requests...'})}\n\n"
+        yield f"data: {json.dumps({'type': 'status', 'message': f'Summarising {len(all_comments)} requests...'})}\n\n"
 
         try:
-            initialize_llm()
+            initialise_llm()
         except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'text': f'LLM initialization error: {e}\n'})}\n\n"
+            yield f"data: {json.dumps({'type': 'error', 'text': f'LLM initialisation error: {e}\n'})}\n\n"
             return
 
-        summaries = summarize_batch(all_comments)
+        summaries = summarise_batch(all_comments)
 
         yield f"data: {json.dumps({'type': 'result', 'text': '=' * 60 + '\nSUPPORT CALL SUMMARY\n' + '=' * 60 + '\n\n'})}\n\n"
 
         for i, summary in enumerate(summaries):
             yield f"data: {json.dumps({'type': 'result', 'text': summary + '\n\n'})}\n\n"
-            rid = request_ids_to_summarize[i]
+            rid = request_ids_to_summarise[i]
             save_summary(rid, summary)
             try:
                 auto_index_request_web(rid, index_summary=True)

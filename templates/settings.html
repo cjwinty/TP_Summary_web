@@ -108,7 +108,7 @@
         <div class="btn-row">
             <button class="btn btn-danger" @click="clearSummaries()">Clear Summaries</button>
             <button class="btn btn-secondary" @click="healthCheck()">Check Health</button>
-            <button class="btn btn-secondary" @click="optimizeDB()">Optimize DB</button>
+            <button class="btn btn-secondary" @click="optimiseDB()">Optimise DB</button>
         </div>
         <div id="health-results" x-show="healthData" style="padding: 10px 0;">
             <div class="step-card" style="font-size:0.9em;">
@@ -225,13 +225,13 @@ function settingsData() {
                 this.cacheStatus = 'Error: ' + e;
             }
         },
-        async optimizeDB() {
-            if (!confirm('Optimize database?\n\nThis will remove orphan records and run VACUUM ANALYZE.')) return;
-            this.cacheStatus = 'Optimizing...';
+        async optimiseDB() {
+            if (!confirm('Optimise database?\n\nThis will remove orphan records and run VACUUM ANALYZE.')) return;
+            this.cacheStatus = 'Optimising...';
             try {
-                const resp = await fetch('/settings/optimize', { method: 'POST' });
+                const resp = await fetch('/settings/optimise', { method: 'POST' });
                 const data = await resp.json();
-                this.cacheStatus = data.message || 'Optimization complete.';
+                this.cacheStatus = data.message || 'Optimisation complete.';
                 fetch('/settings/cache-stats').then(r => r.text()).then(html => {
                     const el = document.getElementById('cache-stats');
                     if (el) el.innerHTML = html;

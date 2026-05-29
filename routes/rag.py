@@ -71,7 +71,7 @@ def _ensure_chunk_type_column():
 
 def get_embedding(text: str) -> list[float]:
     try:
-        cfg.initialize_llm()
+        cfg.initialise_llm()
         from llm_providers import LLMClient
         return LLMClient.generate_embedding(text)
     except Exception as e:
@@ -351,7 +351,7 @@ async def ask_rag(req: AskRequest):
     )
 
     try:
-        cfg.initialize_llm()
+        cfg.initialise_llm()
         from llm_providers import LLMClient
         fallback_note = " (keyword search)" if not has_embeddings else ""
         answer = LLMClient.generate(prompt, temperature=0.3)
@@ -418,7 +418,7 @@ async def find_fixes(req: FindFixesRequest):
             f"Similar tickets:\n{context}"
         )
         try:
-            cfg.initialize_llm()
+            cfg.initialise_llm()
             from shared.llm_providers import LLMClient
             synthesis = LLMClient.generate(synth_prompt, temperature=0.2)
         except Exception as e:

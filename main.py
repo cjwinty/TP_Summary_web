@@ -36,7 +36,7 @@ static_dir = os.path.join(os.path.dirname(__file__), "static")
 os.makedirs(static_dir, exist_ok=True)
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
-from routes.summarize import router as summarize_router
+from routes.summarise import router as summarise_router
 from routes.settings import router as settings_router
 from routes.comments import router as comments_router
 from routes.summaries import router as summaries_router
@@ -46,7 +46,7 @@ from routes.rag import router as rag_router
 from routes.chat import router as chat_router
 from routes.browse import router as browse_router
 
-app.include_router(summarize_router)
+app.include_router(summarise_router)
 app.include_router(settings_router)
 app.include_router(comments_router)
 app.include_router(summaries_router)

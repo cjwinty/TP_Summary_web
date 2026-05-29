@@ -8,7 +8,7 @@ from typing import Optional
 from database import (
     search_cached_comments, search_summaries, search_and_fetch_full,
 )
-from shared.analysis import refine_search_query, summarize_search_results
+from shared.analysis import refine_search_query, summarise_search_results
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -47,7 +47,7 @@ async def search(req: SearchRequest):
     if req.refine and not req.full_fetch:
         try:
             from shared import config as cfg
-            cfg.initialize_llm()
+            cfg.initialise_llm()
             refined = refine_search_query(query)
             if refined and len(refined) > 1:
                 search_terms = refined
@@ -128,7 +128,7 @@ async def search(req: SearchRequest):
     if all_matches and not req.skip_summary:
         try:
             from shared import config as cfg
-            cfg.initialize_llm()
+            cfg.initialise_llm()
             llm_matches = []
             if req.full_fetch:
                 for m in all_matches:
@@ -136,7 +136,7 @@ async def search(req: SearchRequest):
                     llm_matches.append({"request_id": m["request_id"], "text": full_text, "source": "comments"})
             else:
                 llm_matches = all_matches
-            summary_text = summarize_search_results(llm_matches, query, req.custom_prompt)
+            summary_text = summarise_search_results(llm_matches, query, req.custom_prompt)
         except Exception as e:
             summary_text = f"LLM summary failed: {e}"
 

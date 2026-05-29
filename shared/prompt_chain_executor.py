@@ -104,7 +104,7 @@ def render_template(template: str, context: dict) -> str:
 
 def _call_llm(prompt: str, model: str | None = None,
                temperature: float = 0.3, timeout: int = 300) -> str:
-    llm = config.initialize_llm()
+    llm = config.initialise_llm()
     try:
         content = llm.generate(prompt, temperature=temperature)
         if not content:

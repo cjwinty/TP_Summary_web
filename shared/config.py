@@ -180,7 +180,7 @@ def set_verify_ssl(enabled: bool):
     save_user_config(_config)
 
 
-def initialize_llm():
+def initialise_llm():
     from .llm_providers import LLMClient, LocalLLMProvider, CloudLLMProvider, LLMProviderError, LOCAL_PROVIDERS
 
     llm_provider_type = _config.get("llm_provider_type", "local")

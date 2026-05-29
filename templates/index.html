@@ -1,7 +1,7 @@
 {% extends "base.html" %}
-{% block title %}Summarize{% endblock %}
+{% block title %}Summarise{% endblock %}
 {% block content %}
-<div class="summarize-layout" x-data="summarizeData()">
+<div class="summarise-layout" x-data="summariseData()">
     <div class="control-panel">
         <section class="card">
             <h3>Request IDs</h3>
@@ -13,7 +13,7 @@
 
         <section class="card">
             <h3>Actions</h3>
-            <button class="btn btn-primary" @click="doSummarize()" :disabled="busy">Summarize</button>
+            <button class="btn btn-primary" @click="doSummarise()" :disabled="busy">Summarise</button>
             <a href="/settings" class="btn btn-secondary">Settings</a>
             <div style="display:flex; align-items:center; gap:6px; margin-top:8px;">
                 <button class="btn btn-secondary" @click="updateCache()" :disabled="busy">Update Cache</button>
@@ -43,13 +43,13 @@
     <div class="results-panel">
         <p class="status-text" x-text="status"></p>
         <div class="results-box" id="results-area">
-            <pre x-text="resultsText || 'Enter request IDs and click Summarize.'"></pre>
+            <pre x-text="resultsText || 'Enter request IDs and click Summarise.'"></pre>
         </div>
     </div>
 </div>
 
 <script>
-function summarizeData() {
+function summariseData() {
     return {
         ids: '',
         refresh: false,
@@ -64,13 +64,13 @@ function summarizeData() {
         cacheMode: 'smart',
         updateCacheMode: 'smart',
 
-        doSummarize() {
+        doSummarise() {
             if (!this.ids.trim()) return;
             this.busy = true;
             this.status = 'Processing...';
             this.resultsText = '';
             this.abortController = new AbortController();
-            fetch('/summarize', {
+            fetch('/summarise', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({ids: this.ids, refresh: this.refresh}),

@@ -6,7 +6,7 @@ from database import get_prompt as db_get_prompt, DEFAULT_PROMPTS
 
 
 def get_llm():
-    return config.initialize_llm()
+    return config.initialise_llm()
 
 
 def clean_html(text):
@@ -134,8 +134,8 @@ def get_prompt(name):
     return DEFAULT_PROMPTS.get(name, "")
 
 
-def summarize_comments(comments_text, entity_id=None, entity_type="Request", project_name=""):
-    base_prompt = get_prompt("summarize")
+def summarise_comments(comments_text, entity_id=None, entity_type="Request", project_name=""):
+    base_prompt = get_prompt("summarise")
     prompt = _safe_format(
         base_prompt,
         entity_type=entity_type,
@@ -150,9 +150,9 @@ def summarize_comments(comments_text, entity_id=None, entity_type="Request", pro
         return f"Error: {e}"
 
 
-def summarize_batch(texts, batch_size=1, entity_type="Request", entity_ids=None):
+def summarise_batch(texts, batch_size=1, entity_type="Request", entity_ids=None):
     results = []
-    base_prompt = get_prompt("summarize")
+    base_prompt = get_prompt("summarise")
     llm = get_llm()
 
     for i in range(0, len(texts), batch_size):
@@ -198,7 +198,7 @@ def refine_search_query(query):
         return [query]
 
 
-def summarize_search_results(matches, query, custom_prompt=""):
+def summarise_search_results(matches, query, custom_prompt=""):
     if not matches:
         return "No matching results found."
 
@@ -207,7 +207,7 @@ def summarize_search_results(matches, query, custom_prompt=""):
         for m in matches[:20]
     ])
 
-    base_prompt = get_prompt("summarize_search")
+    base_prompt = get_prompt("summarise_search")
     default_prompt = _safe_format(
         base_prompt,
         query=query,

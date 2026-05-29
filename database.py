@@ -282,12 +282,21 @@ def init_db():
             pass
     c.execute("CREATE INDEX IF NOT EXISTS idx_entity_data_project ON entity_data(project_id)")
     conn.commit()
+
+    # ── Migrate: rename prompt names from US to UK spelling ──
+    for old_name, new_name in [
+        ("summarize", "summarise"),
+        ("summarize_search", "summarise_search"),
+    ]:
+        c.execute("UPDATE prompts SET name = %s WHERE name = %s", (new_name, old_name))
+    conn.commit()
+
     init_default_prompts()
-    logger.info("PostgreSQL schema initialized")
+    logger.info("PostgreSQL schema initialised")
 
 
 DEFAULT_PROMPTS = {
-    "summarize": """You are a {entity_type} analyzer. Read the EXISTING comments/conversation for {entity_type} #{entity_id} and produce a detailed summary.
+    "summarise": """You are a {entity_type} analyser. Read the EXISTING comments/conversation for {entity_type} #{entity_id} and produce a detailed summary.
 
 For each {entity_type}, provide a structured summary with these sections:
 - Issue: What was the problem or request about?
@@ -298,7 +307,7 @@ Be detailed and specific. Use information only from the provided comments.
 
 {entity_type} #{entity_id}:
 """,
-    "extract_issues": """Analyze the following {entity_type} comments and classify the issue into one or more of these categories:
+    "extract_issues": """Analyse the following {entity_type} comments and classify the issue into one or more of these categories:
 - Bug Report
 - Feature Request
 - Performance Issue
@@ -317,7 +326,7 @@ Return one term per line.
 
 Query: {query}
 """,
-    "summarize_search": """You analyzed cached support data for the query: "{query}"
+    "summarise_search": """You analysed cached support data for the query: "{query}"
 
 Found {match_count} matching entries. Here are the most relevant:
 
@@ -338,7 +347,7 @@ def init_default_prompts():
                 now = datetime.now().isoformat()
                 c.execute(
                     "INSERT INTO prompts (name, content, is_active, created_at, updated_at) VALUES (%s, %s, %s, %s, %s)",
-                    (name, content, name == "summarize", now, now),
+                    (name, content, name == "summarise", now, now),
                 )
                 conn.commit()
 
@@ -847,7 +856,7 @@ def check_database_health():
             return {"status": "error", "db_size_mb": 0, "row_counts": {}, "orphan_fields": 0, "orphan_percentage": 0, "orphan_embeddings": 0, "orphan_embedding_percentage": 0, "index_count": 0, "indexes": [], "messages": [str(e)]}
 
 
-def optimize_database():
+def optimise_database():
     with _lock:
         try:
             conn = _get_conn()
@@ -880,10 +889,10 @@ def optimize_database():
                 "deleted_embeddings": del_embeddings,
             }
         except Exception as e:
-            return {"message": f"Optimization failed: {e}", "deleted_orphans": 0, "deleted_summaries": 0, "deleted_embeddings": 0}
+            return {"message": f"Optimisation failed: {e}", "deleted_orphans": 0, "deleted_summaries": 0, "deleted_embeddings": 0}
 
 
-def analyze_indexes():
+def analyse_indexes():
     with _lock:
         conn = _get_conn()
         c = conn.cursor()
@@ -984,7 +993,7 @@ def auto_index_request_web(request_id: int, index_summary: bool = True) -> int:
     count = 0
     try:
         from shared import config as cfg
-        cfg.initialize_llm()
+        cfg.initialise_llm()
         from shared.llm_providers import LLMClient
     except Exception:
         return 0

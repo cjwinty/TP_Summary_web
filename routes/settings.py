@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from shared import config as cfg
 from database import (
     get_all_prompts, save_prompt, get_cache_counts, delete_all_summaries,
-    get_max_min_request_id, check_database_health, optimize_database, get_conn,
+    get_max_min_request_id, check_database_health, optimise_database, get_conn,
 )
 from shared.api import refresh_entity_metadata
 
@@ -152,9 +152,9 @@ async def health_check():
     return JSONResponse(health)
 
 
-@router.post("/settings/optimize")
-async def optimize():
-    result = optimize_database()
+@router.post("/settings/optimise")
+async def optimise():
+    result = optimise_database()
     return JSONResponse(result)
 
 

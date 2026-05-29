@@ -26,7 +26,7 @@ CLOUD_PROVIDERS = {
 TARGET_EMBEDDING_DIM = 1536
 
 
-def normalize_embedding(emb: list[float], target_dim: int = TARGET_EMBEDDING_DIM) -> list[float]:
+def normalise_embedding(emb: list[float], target_dim: int = TARGET_EMBEDDING_DIM) -> list[float]:
     if len(emb) < target_dim:
         return emb + [0.0] * (target_dim - len(emb))
     return emb[:target_dim]
@@ -162,7 +162,7 @@ class LocalLLMProvider(BaseLLMProvider):
                 resp.raise_for_status()
                 data = resp.json()
                 emb = data["data"][0]["embedding"]
-                return normalize_embedding(emb)
+                return normalise_embedding(emb)
             except requests.exceptions.HTTPError as e:
                 if e.response.status_code == 404:
                     raise LLMProviderError(
@@ -177,7 +177,7 @@ class LocalLLMProvider(BaseLLMProvider):
                 resp.raise_for_status()
                 data = resp.json()
                 emb = data["embeddings"][0]
-                return normalize_embedding(emb)
+                return normalise_embedding(emb)
             except requests.exceptions.HTTPError as e:
                 if e.response.status_code == 404:
                     self._pull_ollama_model(model)
@@ -185,7 +185,7 @@ class LocalLLMProvider(BaseLLMProvider):
                     resp.raise_for_status()
                     data = resp.json()
                     emb = data["embeddings"][0]
-                    return normalize_embedding(emb)
+                    return normalise_embedding(emb)
                 raise
 
     def generate(self, prompt: str, temperature: float = 0.3, max_tokens: Optional[int] = None, **kwargs) -> str:
@@ -338,7 +338,7 @@ class CloudLLMProvider(BaseLLMProvider):
                 emb = data.get("embedding", [])
                 if not emb:
                     raise LLMProviderError("Empty embedding from Bedrock", "bedrock")
-                return normalize_embedding(emb)
+                return normalise_embedding(emb)
             except requests.exceptions.HTTPError as e:
                 detail = ""
                 try:
@@ -366,7 +366,7 @@ class CloudLLMProvider(BaseLLMProvider):
                 resp.raise_for_status()
                 data = resp.json()
                 emb = data["data"][0]["embedding"]
-                return normalize_embedding(emb)
+                return normalise_embedding(emb)
             except requests.exceptions.HTTPError as e:
                 detail = ""
                 try:
