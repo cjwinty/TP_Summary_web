@@ -157,16 +157,17 @@ async def update_cache(req: CacheUpdateRequest):
 
     mode = (req.mode or "smart").lower()
 
-    def run():
+    if mode == "smart":
+        conn = get_conn()
+        c = conn.cursor()
+        placeholders = ",".join("%s" for _ in request_ids)
+        c.execute(f"SELECT request_id FROM comments WHERE request_id IN ({placeholders})", request_ids)
+        existing = {r[0] for r in c.fetchall()}
+        proc = [rid for rid in request_ids if rid not in existing]
+    else:
         proc = request_ids
-        if mode == "smart":
-            conn = get_conn()
-            c = conn.cursor()
-            placeholders = ",".join("%s" for _ in request_ids)
-            c.execute(f"SELECT request_id FROM comments WHERE request_id IN ({placeholders})", request_ids)
-            existing = {r[0] for r in c.fetchall()}
-            proc = [rid for rid in request_ids if rid not in existing]
 
+    def run():
         for rid in proc:
             delete_comments(rid)
             delete_embeddings(rid)
