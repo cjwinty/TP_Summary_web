@@ -10,7 +10,7 @@ from database import (
     get_all_prompts, save_prompt, get_cache_counts, delete_all_summaries,
     get_max_min_request_id, check_database_health, optimise_database, get_conn,
 )
-from shared.api import refresh_entity_metadata
+from shared.api import refresh_entity_metadata, get_all_projects
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -256,3 +256,102 @@ async def backfill_status():
 async def backfill_stop():
     _backfill_state["stop"] = True
     return JSONResponse({"message": "Backfill stop requested."})
+
+
+# ── Project name backfill ──
+
+_project_name_state = {
+    "running": False,
+    "stop": False,
+    "current": 0,
+    "total": 0,
+    "message": "",
+    "error": None,
+}
+
+
+async def _project_name_sse():
+    global _project_name_state
+    _project_name_state["running"] = True
+    _project_name_state["stop"] = False
+    _project_name_state["current"] = 0
+    _project_name_state["total"] = 0
+    _project_name_state["message"] = ""
+    _project_name_state["error"] = None
+
+    try:
+        yield f"data: {json.dumps({'type': 'status', 'message': 'Fetching projects from TP API...'})}\n\n"
+
+        projects = get_all_projects()
+        if not projects:
+            _project_name_state["running"] = False
+            yield f"data: {json.dumps({'type': 'done', 'message': 'No projects returned from API.'})}\n\n"
+            return
+
+        name_map = {}
+        for p in projects:
+            pid = p.get("Id")
+            name = p.get("Name")
+            if pid and name:
+                try:
+                    name_map[int(pid)] = name
+                except ValueError:
+                    pass
+
+        if not name_map:
+            _project_name_state["running"] = False
+            yield f"data: {json.dumps({'type': 'done', 'message': 'No project names found.'})}\n\n"
+            return
+
+        _project_name_state["total"] = len(name_map)
+        yield f"data: {json.dumps({'type': 'status', 'message': f'Resolving {len(name_map)} project names...'})}\n\n"
+
+        conn = get_conn()
+        c = conn.cursor()
+        count = 0
+        for pid, pname in name_map.items():
+            if _project_name_state["stop"]:
+                _project_name_state["running"] = False
+                yield f"data: {json.dumps({'type': 'done', 'message': f'Stopped after {count} projects.'})}\n\n"
+                return
+
+            c.execute(
+                "UPDATE entity_data SET project_name = %s WHERE project_id = %s AND (project_name IS NULL OR project_name = '')",
+                (pname, pid),
+            )
+            conn.commit()
+            count += 1
+            _project_name_state["current"] = count
+            pct = int(count / len(name_map) * 100)
+            yield f"data: {json.dumps({'type': 'progress', 'percent': pct, 'count': count, 'total': len(name_map)})}\n\n"
+
+        _project_name_state["running"] = False
+        yield f"data: {json.dumps({'type': 'done', 'message': f'Resolved {count} project names.'})}\n\n"
+    except Exception as e:
+        logger.exception("Project name backfill error")
+        _project_name_state["error"] = str(e)
+        _project_name_state["running"] = False
+        yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+
+@router.post("/settings/backfill-project-names")
+async def backfill_project_names():
+    if _project_name_state["running"]:
+        return JSONResponse({"error": "Backfill already running."}, status_code=400)
+    return StreamingResponse(_project_name_sse(), media_type="text/event-stream")
+
+
+@router.get("/settings/backfill-project-names-status")
+async def backfill_project_names_status():
+    return JSONResponse({
+        "running": _project_name_state["running"],
+        "current": _project_name_state["current"],
+        "total": _project_name_state["total"],
+        "message": _project_name_state["message"],
+    })
+
+
+@router.post("/settings/backfill-project-names-stop")
+async def backfill_project_names_stop():
+    _project_name_state["stop"] = True
+    return JSONResponse({"message": "Project name backfill stop requested."})

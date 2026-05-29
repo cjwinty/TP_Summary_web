@@ -175,6 +175,24 @@
             </div>
             <p class="status-text" id="backfill-status"></p>
         </div>
+
+        <hr style="margin:16px 0;border-color:var(--border);">
+
+        <h4>Resolve Project Names</h4>
+        <p class="help-text">Fetch human-readable project names from TP API and backfill any NULL project_name values in cached entity data.</p>
+        <div class="btn-row">
+            <button class="btn btn-primary" @click="startProjectNameBackfill()" x-show="!projectNameRunning" :disabled="projectNameRunning">Resolve Names</button>
+            <button class="btn btn-danger" @click="stopProjectNameBackfill()" x-show="projectNameRunning">Stop</button>
+        </div>
+        <div x-show="projectNameRunning || projectNameDone" style="padding:8px 0;">
+            <div style="display:flex;align-items:center;gap:8px;">
+                <div class="progress-bar" style="flex:1;">
+                    <div class="progress-fill" id="project-name-bar-fill" style="width:0%;"></div>
+                </div>
+                <span id="project-name-pct" class="progress-label" style="min-width:40px;">0%</span>
+            </div>
+            <p class="status-text" id="project-name-status"></p>
+        </div>
     </section>
 </div>
 
@@ -458,6 +476,70 @@ function settingsData() {
             const status = document.getElementById('backfill-status');
             if (status) status.textContent = 'Requesting stop...';
             fetch('/settings/backfill-stop', { method: 'POST' }).catch(() => {});
+        },
+        projectNameRunning: false,
+        projectNameDone: false,
+        async startProjectNameBackfill() {
+            this.projectNameRunning = true;
+            this.projectNameDone = false;
+            const barFill = document.getElementById('project-name-bar-fill');
+            const pct = document.getElementById('project-name-pct');
+            const status = document.getElementById('project-name-status');
+            if (barFill) barFill.style.width = '0%';
+            if (pct) pct.textContent = '0%';
+            if (status) status.textContent = 'Starting...';
+            try {
+                const resp = await fetch('/settings/backfill-project-names', { method: 'POST' });
+                if (!resp.ok) {
+                    const errData = await resp.json();
+                    if (status) status.textContent = errData.error || 'Error';
+                    this.projectNameRunning = false;
+                    return;
+                }
+                const reader = resp.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+                    for (const line of lines) {
+                        if (!line.startsWith('data: ')) continue;
+                        const data = JSON.parse(line.slice(6));
+                        if (data.type === 'progress') {
+                            const p = data.percent || 0;
+                            if (barFill) barFill.style.width = p + '%';
+                            if (pct) pct.textContent = p + '%';
+                            if (status) status.textContent = 'Processing ' + data.count + '/' + data.total;
+                        } else if (data.type === 'status') {
+                            if (status) status.textContent = data.message;
+                        } else if (data.type === 'done') {
+                            if (status) status.textContent = data.message;
+                            if (barFill) barFill.style.width = '100%';
+                            if (pct) pct.textContent = '100%';
+                        } else if (data.type === 'error') {
+                            if (status) status.textContent = data.message;
+                        }
+                    }
+                }
+            } catch (e) {
+                const status = document.getElementById('project-name-status');
+                if (status) status.textContent = 'Error: ' + e;
+            } finally {
+                this.projectNameRunning = false;
+                this.projectNameDone = true;
+                fetch('/settings/cache-stats').then(r => r.text()).then(html => {
+                    const el = document.getElementById('cache-stats');
+                    if (el) el.innerHTML = html;
+                });
+            }
+        },
+        stopProjectNameBackfill() {
+            const status = document.getElementById('project-name-status');
+            if (status) status.textContent = 'Requesting stop...';
+            fetch('/settings/backfill-project-names-stop', { method: 'POST' }).catch(() => {});
         }
     };
 }
