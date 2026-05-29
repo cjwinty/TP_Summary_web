@@ -1,27 +1,70 @@
 {% extends "base.html" %}
 {% block title %}Cached Comments{% endblock %}
 {% block content %}
-<div class="comments-layout" x-data="{ requestId: '', sortDir: 'desc' }">
+<div class="comments-layout" x-data="commentsData()">
     <h1>Cached Comments</h1>
     <div class="search-row">
         <label>Request ID:</label>
-        <input type="text" class="input" x-model="requestId" @keydown.enter="
-            htmx.ajax('GET', '/comments/' + requestId + '?sort=' + sortDir, {target: '#comments-display', swap: 'innerHTML'});
-        ">
-        <button class="btn btn-primary" @click="
-            htmx.ajax('GET', '/comments/' + requestId + '?sort=' + sortDir, {target: '#comments-display', swap: 'innerHTML'});
-        ">Search</button>
+        <input type="text" class="input" x-model="requestId" @keydown.enter="loadData()">
+        <button class="btn btn-primary" @click="loadData()">Search</button>
         <label class="checkbox-row">
             <input type="radio" name="sort" value="desc" x-model="sortDir"
-                   @change="if(requestId) htmx.ajax('GET', '/comments/' + requestId + '?sort=' + sortDir, {target: '#comments-display', swap: 'innerHTML'})"> Newest first
+                   @change="if(requestId) loadData()"> Newest first
         </label>
         <label class="checkbox-row">
             <input type="radio" name="sort" value="asc" x-model="sortDir"
-                   @change="if(requestId) htmx.ajax('GET', '/comments/' + requestId + '?sort=' + sortDir, {target: '#comments-display', swap: 'innerHTML'})"> Oldest first
+                   @change="if(requestId) loadData()"> Oldest first
         </label>
     </div>
+
+    <div id="relations-area" x-show="relations.length > 0" style="margin-bottom:1rem;">
+        <h3>Relations</h3>
+        <div class="card" style="padding:0.5rem;">
+            <table style="width:100%;border-collapse:collapse;font-size:0.9em;">
+                <thead>
+                    <tr style="border-bottom:1px solid var(--border);">
+                        <th style="padding:4px 8px;text-align:left;">ID</th>
+                        <th style="padding:4px 8px;text-align:left;">Type</th>
+                        <th style="padding:4px 8px;text-align:left;">Name</th>
+                        <th style="padding:4px 8px;text-align:left;">State</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <template x-for="rel in relations" :key="rel.related_entity_id">
+                        <tr style="border-bottom:1px solid var(--border);">
+                            <td style="padding:4px 8px;"><a :href="'/comments/' + rel.related_entity_id" x-text="'#' + rel.related_entity_id"></a></td>
+                            <td style="padding:4px 8px;" x-text="rel.related_entity_type || 'Unknown'"></td>
+                            <td style="padding:4px 8px;" x-text="rel.related_entity_name || ''"></td>
+                            <td style="padding:4px 8px;" x-text="rel.related_entity_state || ''"></td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
     <div id="comments-display" class="results-box">
         <pre>Enter an ID and press Enter.</pre>
     </div>
 </div>
+
+<script>
+function commentsData() {
+    return {
+        requestId: '',
+        sortDir: 'desc',
+        relations: [],
+        loadData() {
+            this.relations = [];
+            htmx.ajax('GET', '/comments/' + this.requestId + '?sort=' + this.sortDir, {target: '#comments-display', swap: 'innerHTML'});
+            if (this.requestId) {
+                fetch('/entity/' + this.requestId + '/relations')
+                    .then(r => r.ok ? r.json() : [])
+                    .then(data => { this.relations = data; })
+                    .catch(() => { this.relations = []; });
+            }
+        }
+    };
+}
+</script>
 {% endblock %}

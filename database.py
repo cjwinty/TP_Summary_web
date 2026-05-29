@@ -72,6 +72,20 @@ def init_db():
         )
     """)
 
+    # ── Migrate: add custom field columns to entity_data ──
+    for col, col_type in [
+        ("customer_ref", "TEXT DEFAULT ''"),
+        ("internal_priority", "TEXT DEFAULT ''"),
+        ("support_level", "TEXT DEFAULT ''"),
+        ("next_action", "TEXT DEFAULT ''"),
+        ("paid_work", "TEXT DEFAULT ''"),
+        ("downtime", "TEXT DEFAULT ''"),
+        ("out_of_hours", "TEXT DEFAULT ''"),
+        ("customer_chased_date", "TEXT DEFAULT ''"),
+        ("stop_feedback_request", "TEXT DEFAULT ''"),
+    ]:
+        c.execute(f"ALTER TABLE entity_data ADD COLUMN IF NOT EXISTS {col} {col_type}")
+
     # ── New entity_relations table ──
     c.execute("""
         CREATE TABLE IF NOT EXISTS entity_relations (
@@ -379,7 +393,7 @@ def get_cached_entity_type(entity_id):
     return row["entity_type"] if row else None
 
 
-def save_entity_data(entity_id, entity_type, description, create_date, entity_state, entity_state_id, project_id, client="", product="", release_version="", site="", project_name="", custom_fields=None, fetched_at=None):
+def save_entity_data(entity_id, entity_type, description=None, create_date=None, entity_state=None, entity_state_id=None, project_id=None, client="", product="", release_version="", site="", project_name="", customer_ref="", internal_priority="", support_level="", next_action="", paid_work="", downtime="", out_of_hours="", customer_chased_date="", stop_feedback_request="", custom_fields=None, fetched_at=None):
     if custom_fields is None:
         custom_fields = {}
     if fetched_at is None:
@@ -388,8 +402,8 @@ def save_entity_data(entity_id, entity_type, description, create_date, entity_st
         conn = _get_conn()
         c = conn.cursor()
         c.execute("""
-            INSERT INTO entity_data (entity_id, entity_type, description, create_date, entity_state, entity_state_id, project_id, project_name, client, product, release_version, site, custom_fields, fetched_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO entity_data (entity_id, entity_type, description, create_date, entity_state, entity_state_id, project_id, project_name, client, product, release_version, site, customer_ref, internal_priority, support_level, next_action, paid_work, downtime, out_of_hours, customer_chased_date, stop_feedback_request, custom_fields, fetched_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (entity_id) DO UPDATE SET
                 entity_type = excluded.entity_type,
                 description = excluded.description,
@@ -402,9 +416,18 @@ def save_entity_data(entity_id, entity_type, description, create_date, entity_st
                 product = excluded.product,
                 release_version = excluded.release_version,
                 site = excluded.site,
+                customer_ref = excluded.customer_ref,
+                internal_priority = excluded.internal_priority,
+                support_level = excluded.support_level,
+                next_action = excluded.next_action,
+                paid_work = excluded.paid_work,
+                downtime = excluded.downtime,
+                out_of_hours = excluded.out_of_hours,
+                customer_chased_date = excluded.customer_chased_date,
+                stop_feedback_request = excluded.stop_feedback_request,
                 custom_fields = excluded.custom_fields,
                 fetched_at = excluded.fetched_at
-        """, (entity_id, entity_type, description, create_date, entity_state, entity_state_id, project_id, project_name, client, product, release_version, site, json.dumps(custom_fields), fetched_at))
+        """, (entity_id, entity_type, description, create_date, entity_state, entity_state_id, project_id, project_name, client, product, release_version, site, customer_ref, internal_priority, support_level, next_action, paid_work, downtime, out_of_hours, customer_chased_date, stop_feedback_request, json.dumps(custom_fields), fetched_at))
         conn.commit()
 
 

@@ -4,7 +4,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
-from database import get_cached_comments, get_cached_entity_type
+from database import get_cached_comments, get_cached_entity_type, get_relations as db_get_relations
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -42,3 +42,10 @@ async def get_comments(request_id: int, sort: str = "desc"):
         html += f'<div class="comment-card"><strong>[{i}] {date}</strong>\n<pre>{display_text}</pre></div>\n'
 
     return HTMLResponse(html)
+
+
+@router.get("/entity/{entity_id}/relations")
+async def entity_relations(entity_id: int):
+    from database import get_relations as _get_relations
+    relations = _get_relations(entity_id)
+    return JSONResponse(relations)

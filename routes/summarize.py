@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from shared.config import PROJECT_NAME, initialize_llm, logger
 
-from shared.api import get_comments as api_get_comments
+from shared.api import get_comments as api_get_comments, refresh_entity_metadata
 
 from shared.analysis import summarize_batch, deduplicate_comment_dicts
 
@@ -80,6 +80,7 @@ async def summarize(req: SummarizeRequest):
 
             use_cache = not req.refresh
             comments, fetched_at, fresh = api_get_comments(request_id, use_cache=use_cache)
+            refresh_entity_metadata(request_id)
             if fresh:
                 fetched_count += 1
             else:
@@ -172,6 +173,7 @@ async def update_cache(req: CacheUpdateRequest):
             delete_comments(rid)
             delete_embeddings(rid)
             api_get_comments(rid, use_cache=False)
+            refresh_entity_metadata(rid)
             try:
                 auto_index_request_web(rid)
             except Exception:
@@ -216,6 +218,7 @@ async def cache_range(req: CacheRangeRequest):
                 if _cache_stop:
                     break
                 api_get_comments(rid, use_cache=False)
+                refresh_entity_metadata(rid)
                 try:
                     auto_index_request_web(rid)
                 except Exception:
@@ -231,6 +234,7 @@ async def cache_range(req: CacheRangeRequest):
                     break
                 delete_embeddings(rid)
                 api_get_comments(rid, use_cache=False)
+                refresh_entity_metadata(rid)
                 try:
                     auto_index_request_web(rid)
                 except Exception:

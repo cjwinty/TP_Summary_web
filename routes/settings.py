@@ -1,15 +1,16 @@
 import json
 import logging
-from threading import Thread
+import threading
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from shared import config as cfg
 from database import (
     get_all_prompts, save_prompt, get_cache_counts, delete_all_summaries,
-    get_max_min_request_id, check_database_health, optimize_database,
+    get_max_min_request_id, check_database_health, optimize_database, get_conn,
 )
+from shared.api import refresh_entity_metadata
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -155,3 +156,103 @@ async def health_check():
 async def optimize():
     result = optimize_database()
     return JSONResponse(result)
+
+
+# ── Metadata backfill ──
+
+_backfill_state = {
+    "running": False,
+    "stop": False,
+    "current": 0,
+    "total": 0,
+    "message": "",
+    "error": None,
+}
+
+
+def _backfill_work(ids: list[int]):
+    global _backfill_state
+    count = 0
+    for rid in ids:
+        if _backfill_state["stop"]:
+            _backfill_state["message"] = f"Stopped after {count} entities."
+            break
+        try:
+            refresh_entity_metadata(rid)
+            count += 1
+        except Exception:
+            pass
+        _backfill_state["current"] = count
+    _backfill_state["running"] = False
+    if not _backfill_state["stop"]:
+        _backfill_state["message"] = f"Backfilled metadata for {count} entities."
+
+
+async def _backfill_sse():
+    global _backfill_state
+    _backfill_state["running"] = True
+    _backfill_state["stop"] = False
+    _backfill_state["current"] = 0
+    _backfill_state["total"] = 0
+    _backfill_state["message"] = ""
+    _backfill_state["error"] = None
+
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("""
+        SELECT c.request_id FROM comments c
+        WHERE NOT EXISTS (
+            SELECT 1 FROM entity_data e WHERE e.entity_id = c.request_id
+        )
+        ORDER BY c.request_id
+    """)
+    ids = [r[0] for r in c.fetchall()]
+    _backfill_state["total"] = len(ids)
+
+    if not ids:
+        _backfill_state["running"] = False
+        yield f"data: {json.dumps({'type': 'done', 'message': 'All cached entities already have metadata.'})}\n\n"
+        return
+
+    yield f"data: {json.dumps({'type': 'status', 'message': f'Backfilling metadata for {len(ids)} entities...'})}\n\n"
+
+    thread = threading.Thread(target=_backfill_work, args=(ids,), daemon=True)
+    thread.start()
+
+    last = 0
+    while thread.is_alive():
+        if _backfill_state["error"]:
+            yield f"data: {json.dumps({'type': 'error', 'message': _backfill_state['error']})}\n\n"
+            return
+        cur = _backfill_state["current"]
+        if cur != last:
+            pct = int(cur / _backfill_state["total"] * 100) if _backfill_state["total"] > 0 else 0
+            yield f"data: {json.dumps({'type': 'progress', 'percent': pct, 'count': cur, 'total': _backfill_state['total']})}\n\n"
+            last = cur
+        import asyncio
+        await asyncio.sleep(0.5)
+
+    yield f"data: {json.dumps({'type': 'done', 'message': _backfill_state['message']})}\n\n"
+
+
+@router.post("/settings/backfill-metadata")
+async def backfill_metadata():
+    if _backfill_state["running"]:
+        return JSONResponse({"error": "Backfill already running."}, status_code=400)
+    return StreamingResponse(_backfill_sse(), media_type="text/event-stream")
+
+
+@router.get("/settings/backfill-status")
+async def backfill_status():
+    return JSONResponse({
+        "running": _backfill_state["running"],
+        "current": _backfill_state["current"],
+        "total": _backfill_state["total"],
+        "message": _backfill_state["message"],
+    })
+
+
+@router.post("/settings/backfill-stop")
+async def backfill_stop():
+    _backfill_state["stop"] = True
+    return JSONResponse({"message": "Backfill stop requested."})

@@ -4,9 +4,10 @@ import os
 import certifi
 import re
 import logging
+import xml.etree.ElementTree as ET
 from datetime import datetime
 from .config import BASE_URL, USERNAME, PASSWORD, PROJECT_NAME, TP_API_TOKEN
-from database import get_cached_comments, save_comments
+from database import get_cached_comments, save_comments, get_cached_entity_type
 from .analysis import clean_html
 
 logger = logging.getLogger(__name__)
@@ -23,6 +24,31 @@ V2_TO_V1_ENDPOINT = {
     "Impediment": "impediments",
     "PortfolioEpic": "portfolioepics",
 }
+
+
+def _find_local(parent, local_name):
+    """Find first descendant element by local tag name (namespace-agnostic)."""
+    for el in parent.iter():
+        tag = el.tag
+        if '}' in tag:
+            tag = tag.split('}', 1)[1]
+        if tag == local_name:
+            return el
+    return None
+
+
+def _get_local_text(parent, local_name):
+    """Get text content of first descendant with matching local tag name."""
+    el = _find_local(parent, local_name)
+    return el.text if el is not None else None
+
+
+def _get_local_attr(parent, local_name, attr):
+    """Get attribute from first descendant element by local tag name."""
+    el = _find_local(parent, local_name)
+    if el is not None:
+        return el.get(attr)
+    return None
 
 
 def _get_auth():
@@ -153,19 +179,6 @@ def get_comments(entity_id, use_cache=True):
         entity_type = get_entity_type(entity_id)
         save_comments(entity_id, comments=all_comments, entity_type=entity_type)
 
-        try:
-            entity_data = get_entity_data(entity_id, entity_type) if entity_type else None
-            if entity_data:
-                from database import save_entity_data as _save_entity_data
-                _save_entity_data(entity_id, entity_type=entity_type, **entity_data)
-
-            relations = get_relations(entity_id)
-            if relations:
-                from database import save_relations as _save_relations
-                _save_relations(entity_id, entity_type or "Request", relations)
-        except Exception:
-            logger.warning("Failed to save entity metadata for %s", entity_id)
-
     fetched_at = datetime.now().isoformat()
     return all_comments, fetched_at, True
 
@@ -174,6 +187,7 @@ def get_entity_data(entity_id: int, entity_type: str) -> dict | None:
     v1_base = BASE_URL.replace("/api/v2", "/api/v1")
     v1_path = V2_TO_V1_ENDPOINT.get(entity_type)
     if not v1_path:
+        logger.warning("No v1 endpoint mapping for entity type '%s'", entity_type)
         return None
     url = f"{v1_base}/{v1_path}/{entity_id}"
     params = {"include": "[id,customFields]"}
@@ -190,53 +204,98 @@ def get_entity_data(entity_id: int, entity_type: str) -> dict | None:
                 logger.warning("Entity data API returned status %d for %s %s", r.status_code, entity_type, entity_id)
                 return None
 
-            xml_text = r.text
+            try:
+                root = ET.fromstring(r.text)
+            except ET.ParseError:
+                logger.warning("Failed to parse XML for %s %s", entity_type, entity_id)
+                return None
 
             result = {}
 
-            es_match = re.search(r'<EntityState[^>]+Name="([^"]+)"', xml_text)
-            if es_match:
-                result["entity_state"] = es_match.group(1)
-            es_id_match = re.search(r'<EntityState[^>]+Id="(\d+)"', xml_text)
-            if es_id_match:
-                result["entity_state_id"] = int(es_id_match.group(1))
-
-            desc_match = re.search(r'<Description[^>]*>(.*?)</Description>', xml_text, re.DOTALL)
-            if desc_match:
-                val = desc_match.group(1)
-                result["description"] = val if val != "true" else ""
-
-            cd_match = re.search(r'<CreateDate>([^<]*)</CreateDate>', xml_text)
-            if cd_match:
-                result["create_date"] = cd_match.group(1)
-
-            proj_match = re.search(r'<Project[^>]+Id="(\d+)"[^>]*Name="([^"]*)"', xml_text)
-            if proj_match:
-                result["project_id"] = int(proj_match.group(1))
-                result["project_name"] = proj_match.group(2)
-
-            start = xml_text.find("<CustomFields>")
-            if start >= 0:
-                cf_section = xml_text[start:]
-                field_pattern = r'<Field\s+Type="([^"]*)">\s*<Name>([^<]*)</Name>\s*<Value>([^<]*)</Value>\s*</Field>'
-                matches = re.findall(field_pattern, cf_section, re.DOTALL)
-                custom_fields = {}
-                for field_type, field_name, field_value in matches:
-                    val = field_value.strip()
-                    if val and val != "true":
-                        custom_fields[field_name] = val
-                    elif val == "true":
-                        custom_fields[field_name] = "Yes"
-                    elif val:
+            es = _find_local(root, "EntityState")
+            if es is not None:
+                name = es.get("Name") or _get_local_text(es, "Name")
+                if name:
+                    result["entity_state"] = name
+                es_id = es.get("Id") or _get_local_text(es, "Id")
+                if es_id:
+                    try:
+                        result["entity_state_id"] = int(es_id)
+                    except ValueError:
                         pass
+
+            desc = _find_local(root, "Description")
+            if desc is not None and desc.text:
+                result["description"] = desc.text if desc.text != "true" else ""
+
+            cd = _find_local(root, "CreateDate")
+            if cd is not None and cd.text:
+                result["create_date"] = cd.text
+
+            proj = _find_local(root, "Project")
+            if proj is not None:
+                pid = proj.get("Id") or _get_local_text(proj, "Id")
+                if pid:
+                    try:
+                        result["project_id"] = int(pid)
+                    except ValueError:
+                        pass
+                pname = proj.get("Name") or _get_local_text(proj, "Name")
+                if pname:
+                    result["project_name"] = pname
+
+            cf = _find_local(root, "CustomFields")
+            if cf is not None:
+                custom_fields = {}
+                for field_el in cf:
+                    tag = field_el.tag
+                    if '}' in tag:
+                        tag = tag.split('}', 1)[1]
+                    if tag != "Field":
+                        continue
+                    fname = field_el.get("Name") or _get_local_text(field_el, "Name")
+                    fvalue = field_el.get("Value") or _get_local_text(field_el, "Value")
+                    if fname and fvalue:
+                        val = fvalue.strip()
+                        if val and val != "true":
+                            custom_fields[fname] = val
+                        elif val == "true":
+                            custom_fields[fname] = "Yes"
                 if custom_fields:
                     result["custom_fields"] = custom_fields
+                    col_map = {
+                        "client": ("Client", "client"),
+                        "product": ("Product", "product"),
+                        "release_version": ("Release Version", "release_version"),
+                        "site": ("Site", "site"),
+                        "customer_ref": ("CustomerRef",),
+                        "internal_priority": ("Internal Priority",),
+                        "support_level": ("Support Level",),
+                        "next_action": ("Next Action",),
+                        "paid_work": ("Paid Work",),
+                        "downtime": ("Downtime",),
+                        "out_of_hours": ("Out of hours",),
+                        "customer_chased_date": ("Customer Chased date",),
+                        "stop_feedback_request": ("Stop Feedback Request",),
+                    }
+                    for col, keys in col_map.items():
+                        for k in keys:
+                            v = custom_fields.get(k)
+                            if v:
+                                result[col] = v
+                                break
 
-            return result if result else None
+            if not result:
+                logger.warning("No data extracted from v1 API response for %s %s", entity_type, entity_id)
+                return None
+
+            return result
         except requests.RequestException:
             if attempt == 2:
+                logger.warning("All attempts failed fetching entity data for %s %s", entity_type, entity_id)
                 return None
         except Exception:
+            logger.warning("Unexpected error in get_entity_data for %s %s", entity_type, entity_id)
             return None
 
     return None
@@ -249,8 +308,8 @@ def get_relations(entity_id: int) -> list[dict]:
 
     for where_field, eid in directions:
         url = f"{BASE_URL}/Relation"
+        params = {"where": f"{where_field} = {eid}", "take": 100}
         while url:
-            params = {"where": f"{where_field} = {eid}", "take": 100}
             data = make_request(url, params)
             if not data:
                 break
@@ -308,5 +367,46 @@ def get_relations(entity_id: int) -> list[dict]:
                 })
 
             url = data.get("next")
+            params = {}
 
     return relations
+
+
+def refresh_entity_metadata(entity_id: int, depth: int = 0, seen: set | None = None) -> None:
+    """Fetch and persist entity metadata (type, custom fields, relations) for an entity.
+
+    Operates one level deep by default — also saves metadata for direct relations.
+    Uses a seen set to avoid cycles.
+    """
+    if seen is None:
+        seen = set()
+    if entity_id in seen or entity_id is None:
+        return
+    seen.add(entity_id)
+
+    entity_type = get_cached_entity_type(entity_id)
+    if not entity_type:
+        entity_type = get_entity_type(entity_id)
+
+    if entity_type:
+        entity_data = get_entity_data(entity_id, entity_type)
+        if entity_data:
+            try:
+                from database import save_entity_data as _save_entity_data
+                _save_entity_data(entity_id, entity_type=entity_type, **entity_data)
+            except Exception:
+                logger.warning("Failed to save entity_data for %s", entity_id)
+
+        try:
+            relations = get_relations(entity_id)
+            if relations:
+                from database import save_relations as _save_relations
+                _save_relations(entity_id, entity_type, relations)
+
+                if depth == 0:
+                    for rel in relations:
+                        other_id = rel.get("related_entity_id")
+                        if other_id and other_id not in seen:
+                            refresh_entity_metadata(other_id, depth=1, seen=seen)
+        except Exception:
+            logger.warning("Failed to save relations for %s", entity_id)

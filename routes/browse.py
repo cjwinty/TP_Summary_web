@@ -5,7 +5,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from database import (
     get_cached_projects, get_entity_types_for_project,
-    get_entities_by_project_and_type,
+    get_entities_by_project_and_type, get_entity_data, get_relations,
 )
 
 logger = logging.getLogger(__name__)
@@ -34,3 +34,13 @@ async def list_types(project_id: int):
 async def list_entities(project_id: int, entity_type: str):
     entities = get_entities_by_project_and_type(project_id, entity_type)
     return JSONResponse({"entities": entities})
+
+
+@router.get("/browse/entity/{entity_id}")
+async def entity_detail(entity_id: int):
+    data = get_entity_data(entity_id)
+    relations = get_relations(entity_id)
+    return JSONResponse({
+        "entity_data": data,
+        "relations": relations,
+    })
