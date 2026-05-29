@@ -209,7 +209,14 @@ async def cache_range(req: CacheRangeRequest):
             existing = {r[0] for r in c.fetchall()}
             missing = sorted(set(range(start, end + 1)) - existing)
             skipped = total - len(missing)
-            if not missing:
+            c.execute("""
+                SELECT c.request_id FROM comments c
+                LEFT JOIN entity_data e ON c.request_id = e.entity_id
+                WHERE c.request_id BETWEEN %s AND %s AND e.entity_id IS NULL
+            """, (start, end))
+            stale = {r[0] for r in c.fetchall()} - set(missing)
+            stale_metadata = sorted(stale)
+            if not missing and not stale_metadata:
                 _cache_running = False
                 yield f"data: {json.dumps({'type': 'progress', 'percent': 100, 'count': 0, 'total': total, 'skipped': skipped})}\n\n"
                 yield f"data: {json.dumps({'type': 'done', 'message': f'All {total} IDs already cached'})}\n\n"
@@ -226,8 +233,17 @@ async def cache_range(req: CacheRangeRequest):
                 count += 1
                 percent = int((count + skipped) / total * 100)
                 yield f"data: {json.dumps({'type': 'progress', 'percent': percent, 'count': count, 'total': total, 'skipped': skipped})}\n\n"
+            metadata_only_count = 0
+            for rid in stale_metadata:
+                if _cache_stop:
+                    break
+                refresh_entity_metadata(rid)
+                metadata_only_count += 1
+                count += 1
+                percent = int((count + skipped) / total * 100)
+                yield f"data: {json.dumps({'type': 'progress', 'percent': percent, 'count': count, 'total': total, 'skipped': skipped, 'metadata_only': metadata_only_count})}\n\n"
             _cache_running = False
-            yield f"data: {json.dumps({'type': 'done', 'message': f'Cached {count} new, skipped {skipped} existing ({total} total)'})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'message': f'Cached {len(missing)} new, refreshed {metadata_only_count} metadata, skipped {skipped} existing ({total} total)'})}\n\n"
         else:  # force
             for rid in range(start, end + 1):
                 if _cache_stop:
