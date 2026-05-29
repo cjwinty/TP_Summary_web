@@ -3,3 +3,5 @@ __pycache__/
 .env
 secure_config.json
 *.pyc
+user_config.json
+tp_query_error.log
