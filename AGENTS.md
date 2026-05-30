@@ -123,8 +123,9 @@ All routes are defined under their respective router in `routes/`. The `main.py`
 | POST | `/settings/backfill-project-names` | SSE: fetch all project names, backfill NULLs |
 | GET | `/settings/backfill-project-names-status` | Project name backfill progress |
 | POST | `/settings/backfill-project-names-stop` | Stop project name backfill |
-| POST | `/settings/cache-range` | SSE: cache a range of entity IDs (smart/force) |
+| POST | `/settings/cache-range` | SSE (bg thread): cache a range of entity IDs (smart/force), two-phase parallel with ThreadPoolExecutor (20/8 workers) |
 | POST | `/settings/cache-range-stop` | Stop cache range operation |
+| GET | `/settings/cache-range-status` | Cache range progress (running, current, total, message, phase, skipped, metadata_only, unchanged) |
 
 ### Search (`/search`)
 | Method | Path | Description |
@@ -160,7 +161,7 @@ All routes are defined under their respective router in `routes/`. The `main.py`
 | `get_entity_type(entity_id)` | Discover entity type via v2 `/Assignables` |
 | `get_all_projects()` | Fetch all projects via v2 `/Project` |
 | `get_relations(entity_id)` | Fetch relations via v2 `/Relation` with pagination |
-| `refresh_entity_metadata(entity_id, depth=0, seen=set)` | Standalone fetch+save of entity_data and relations. Recurses one level into direct relations with cycle detection. Skips unsupported types (Period, Timesheet) without API calls. |
+| `refresh_entity_metadata(entity_id, depth=0, seen=set, force=False)` | Standalone fetch+save of entity_data and relations. Recurses one level into direct relations with cycle detection. `force=True` bypasses DB cache and re-fetches from API. Skips unsupported types (Period, Timesheet) without API calls. |
 
 ### `database.py` — PostgreSQL CRUD
 | Function | Description |
@@ -206,12 +207,12 @@ The Settings page provides unified cache management:
 | **Clear buttons** | Individual clear for Entity Data, Entity Relations, Summaries, Chat History; Clear All Cache (FK-safe order) |
 | **Entity Metadata Backfill** | SSE: two-phase parallel (ThreadPoolExecutor 20 workers). Phase 1: metadata + relations fetch. Phase 2: embedding generation. Reports phase transitions to UI. |
 | **Resolve Project Names** | SSE: single TP API call to get all projects; backfill NULL project_name values |
-| **Cache Range** | SSE: cache a range of entity IDs with progress. Smart = missing only + metadata refresh; Force = full re-fetch |
+| **Cache Range** | SSE (bg thread): two-phase parallel (ThreadPoolExecutor 20/8 workers). Reports progress, phase, skipped, metadata_only, and unchanged counts. Smart = missing only + metadata refresh; Force = full re-fetch + diff-based embedding regeneration |
 
 ## Cache Range Behaviour
 
 - **Smart mode**: Queries which IDs are already cached, skips them, refreshes entity_data for cached entities missing metadata. Reports separate counts for new fetches vs metadata-only refreshes.
-- **Force mode**: Deletes embeddings, re-fetches comments and entity metadata for every entity in range.
+- **Force mode**: Re-fetches comments and entity metadata for every entity in range, compares old vs new data (JSON diff), and only regenerates embeddings for entities whose data actually changed. Unchanged entities preserve their existing embeddings.
 
 ## Unsupported Entity Types
 

@@ -71,8 +71,8 @@ Prompts receive these variables automatically:
 
 | Operation | Pattern | Behaviour |
 |-----------|---------|-----------|
-| **Smart cache range** | SSE | Skips already-cached entities; refreshes entity_data for entities missing it |
-| **Force cache range** | SSE | Deletes embeddings, re-fetches comments + metadata for every entity in range |
+| **Smart cache range** | SSE + bg thread pool | Two-phase parallel (20/8 workers): Phase 1 fetches comments + metadata for missing and stale entities, Phase 2 generates embeddings. Reports phase transitions, skipped, and metadata_only counts. |
+| **Force cache range** | SSE + bg thread pool | Two-phase parallel (20/8 workers): Phase 1 re-fetches all comments + metadata, compares old vs new data (JSON diff), tracks changed vs unchanged. Phase 2 regenerates embeddings only for changed entities. Unchanged entities preserve existing embeddings. |
 | **Entity Metadata Backfill** | SSE + bg thread pool | Two-phase parallel (20 workers): Phase 1 fetches metadata + relations, Phase 2 generates embeddings. SSE reports phase transitions. |
 | **Project Name Backfill** | SSE (inline) | Single API call for all projects; updates all NULL `project_name` rows |
 | **Reindex (missing)** | SSE + bg thread pool | Generates embeddings only for entities that lack them; 8-worker parallel batch system |
@@ -90,4 +90,4 @@ The `embeddings` table uses an **HNSW (Hierarchical Navigable Small World)** ind
 
 `request_custom_fields` is a dead data source — no new rows written since SQLite migration. All queries (client filter, search) now use `entity_data` instead. The table and its indexes are preserved for backward compatibility but not queried by any route.
 
-All long-running operations use SSE streaming with a progress bar. The same pattern is reused across reindex, backfills, and cache range.
+All long-running operations use SSE streaming with a progress bar. The same pattern is reused across reindex, backfills, and cache range. The settings page checks all four status endpoints (`/rag/reindex-status`, `/settings/backfill-status`, `/settings/cache-range-status`, `/settings/backfill-project-names-status`) on page load via Alpine.js `init()` — if any operation is still running server-side, the UI re-enters running state and polls every 2s until completion. This ensures running jobs survive navigation away and back.
