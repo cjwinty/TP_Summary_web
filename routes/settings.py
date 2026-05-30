@@ -13,7 +13,7 @@ from database import (
     clear_all_cached_data,
 )
 from shared.api import refresh_entity_metadata, get_all_projects, get_comments as api_get_comments
-from database import auto_index_request_web, delete_embeddings
+from database import auto_index_request_web
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -438,8 +438,19 @@ async def backfill_project_names_stop():
 
 # ── Cache Range ──
 
-_cache_running = False
-_cache_stop = False
+_cache_range_state = {
+    "running": False,
+    "stop": False,
+    "current": 0,
+    "total": 0,
+    "skipped": 0,
+    "metadata_only": 0,
+    "unchanged": 0,
+    "message": "",
+    "error": None,
+    "phase": "",
+    "phase_message": "",
+}
 
 
 class CacheRangeRequest(BaseModel):
@@ -448,87 +459,251 @@ class CacheRangeRequest(BaseModel):
     mode: str = "smart"
 
 
+def _cache_range_work(missing_ids: list[int], stale_metadata_ids: list[int], mode: str):
+    import json as _json
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    global _cache_range_state
+
+    if mode == "smart":
+        all_ids = list(missing_ids) + list(stale_metadata_ids)
+        _cache_range_state["phase"] = "metadata"
+        _cache_range_state["current"] = 0
+        _cache_range_state["total"] = len(all_ids)
+        _cache_range_state["phase_message"] = (
+            f"Phase 1/2: Fetching metadata for {len(all_ids)} entities "
+            f"({len(missing_ids)} new + {len(stale_metadata_ids)} stale)..."
+        )
+
+        def _smart_phase1(rid):
+            if rid in missing_ids:
+                api_get_comments(rid, use_cache=False)
+            refresh_entity_metadata(rid)
+
+        successful_ids = []
+        with ThreadPoolExecutor(max_workers=20) as executor:
+            fut_map = {executor.submit(_smart_phase1, rid): rid for rid in all_ids}
+            for fut in as_completed(fut_map):
+                if _cache_range_state["stop"]:
+                    _cache_range_state["running"] = False
+                    _cache_range_state["message"] = (
+                        f"Stopped after {_cache_range_state['current']} entities (metadata phase)."
+                    )
+                    return
+                rid = fut_map[fut]
+                try:
+                    fut.result()
+                    if rid in missing_ids:
+                        successful_ids.append(rid)
+                except Exception:
+                    pass
+                _cache_range_state["current"] += 1
+
+        _cache_range_state["phase"] = "embeddings"
+        _cache_range_state["current"] = 0
+        _cache_range_state["total"] = len(successful_ids)
+        _cache_range_state["phase_message"] = (
+            f"Phase 2/2: Generating embeddings for {len(successful_ids)} new entities..."
+        )
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            fut_map = {executor.submit(auto_index_request_web, rid): rid for rid in successful_ids}
+            for fut in as_completed(fut_map):
+                if _cache_range_state["stop"]:
+                    _cache_range_state["running"] = False
+                    _cache_range_state["message"] = (
+                        f"Stopped after {_cache_range_state['current']}/{len(successful_ids)} (embedding phase)."
+                    )
+                    return
+                try:
+                    fut.result()
+                except Exception:
+                    pass
+                _cache_range_state["current"] += 1
+
+        _cache_range_state["running"] = False
+        _cache_range_state["message"] = (
+            f"Cached {len(successful_ids)} new, "
+            f"refreshed {len(stale_metadata_ids)} metadata, "
+            f"skipped {_cache_range_state['skipped']} existing "
+            f"({_cache_range_state['skipped'] + len(all_ids)} total)"
+        )
+
+    else:  # force
+        total = len(missing_ids)
+        _cache_range_state["phase"] = "metadata"
+        _cache_range_state["current"] = 0
+        _cache_range_state["total"] = total
+        _cache_range_state["phase_message"] = (
+            f"Phase 1/2: Fetching fresh data for {total} entities..."
+        )
+
+        changed_ids = []
+
+        def _force_phase1(rid):
+            from database import get_cached_comments as _get_cached, get_entity_data as _get_ed
+            old_comments, _ = _get_cached(rid)
+            old_edata = _get_ed(rid)
+            api_get_comments(rid, use_cache=False)
+            refresh_entity_metadata(rid, force=True)
+            new_comments, _ = _get_cached(rid)
+            new_edata = _get_ed(rid)
+            old_c = _json.dumps(old_comments, sort_keys=True, default=str) if old_comments else ""
+            new_c = _json.dumps(new_comments, sort_keys=True, default=str) if new_comments else ""
+            old_e = _json.dumps(old_edata, sort_keys=True, default=str) if old_edata else ""
+            new_e = _json.dumps(new_edata, sort_keys=True, default=str) if new_edata else ""
+            if old_c != new_c or old_e != new_e:
+                return rid
+            return None
+
+        with ThreadPoolExecutor(max_workers=20) as executor:
+            fut_map = {executor.submit(_force_phase1, rid): rid for rid in missing_ids}
+            for fut in as_completed(fut_map):
+                if _cache_range_state["stop"]:
+                    _cache_range_state["running"] = False
+                    _cache_range_state["message"] = (
+                        f"Stopped after {_cache_range_state['current']} entities (metadata phase)."
+                    )
+                    return
+                try:
+                    result = fut.result()
+                    if result is not None:
+                        changed_ids.append(result)
+                except Exception:
+                    pass
+                _cache_range_state["current"] += 1
+
+        unchanged = total - len(changed_ids)
+        _cache_range_state["unchanged"] = unchanged
+        _cache_range_state["phase"] = "embeddings"
+        _cache_range_state["current"] = 0
+        _cache_range_state["total"] = len(changed_ids)
+        _cache_range_state["phase_message"] = (
+            f"Phase 2/2: Generating embeddings for {len(changed_ids)} changed entities "
+            f"({unchanged} unchanged, preserved)..."
+        )
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            fut_map = {executor.submit(auto_index_request_web, rid): rid for rid in changed_ids}
+            for fut in as_completed(fut_map):
+                if _cache_range_state["stop"]:
+                    _cache_range_state["running"] = False
+                    _cache_range_state["message"] = (
+                        f"Stopped after {_cache_range_state['current']}/{len(changed_ids)} (embedding phase)."
+                    )
+                    return
+                try:
+                    fut.result()
+                except Exception:
+                    pass
+                _cache_range_state["current"] += 1
+
+        _cache_range_state["running"] = False
+        _cache_range_state["message"] = (
+            f"Force-cached {total} entities: {len(changed_ids)} changed (re-indexed), "
+            f"{unchanged} unchanged (embeddings preserved)."
+        )
+
+
+async def _cache_range_sse(start: int, end: int, mode: str):
+    global _cache_range_state
+    _cache_range_state["running"] = True
+    _cache_range_state["stop"] = False
+    _cache_range_state["current"] = 0
+    _cache_range_state["total"] = 0
+    _cache_range_state["skipped"] = 0
+    _cache_range_state["metadata_only"] = 0
+    _cache_range_state["unchanged"] = 0
+    _cache_range_state["message"] = ""
+    _cache_range_state["error"] = None
+    _cache_range_state["phase"] = ""
+    _cache_range_state["phase_message"] = ""
+
+    total_in_range = end - start + 1
+
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT request_id FROM comments WHERE request_id BETWEEN %s AND %s", (start, end))
+    existing = {r[0] for r in c.fetchall()}
+    missing = sorted(set(range(start, end + 1)) - existing)
+    skipped_count = total_in_range - len(missing)
+    _cache_range_state["skipped"] = skipped_count
+
+    c.execute("""
+        SELECT c.request_id FROM comments c
+        LEFT JOIN entity_data e ON c.request_id = e.entity_id
+        WHERE c.request_id BETWEEN %s AND %s AND e.entity_id IS NULL
+    """, (start, end))
+    stale = {r[0] for r in c.fetchall()} - set(missing)
+    stale_metadata = sorted(stale)
+    _cache_range_state["metadata_only"] = len(stale_metadata)
+
+    early_return = False
+    if mode == "smart" and not missing and not stale_metadata:
+        _cache_range_state["running"] = False
+        yield f"data: {json.dumps({'type': 'done', 'message': f'All {total_in_range} IDs already cached'})}\n\n"
+        early_return = True
+
+    if not early_return:
+        thread = threading.Thread(
+            target=_cache_range_work,
+            args=(missing, stale_metadata, mode),
+            daemon=True,
+        )
+        thread.start()
+
+        last = 0
+        while thread.is_alive():
+            phase_msg = _cache_range_state.get("phase_message", "")
+            if phase_msg:
+                yield f"data: {json.dumps({'type': 'status', 'message': phase_msg})}\n\n"
+                _cache_range_state["phase_message"] = ""
+            cur = _cache_range_state["current"]
+            total = _cache_range_state["total"]
+            phase = _cache_range_state.get("phase", "metadata")
+            if cur != last:
+                pct = int(cur / total * 100) if total > 0 else 0
+                yield f"data: {json.dumps({
+                    'type': 'progress',
+                    'phase': phase,
+                    'percent': pct,
+                    'count': cur,
+                    'total': total,
+                    'skipped': _cache_range_state['skipped'],
+                    'metadata_only': _cache_range_state['metadata_only'],
+                    'unchanged': _cache_range_state['unchanged'],
+                })}\n\n"
+                last = cur
+            import asyncio
+            await asyncio.sleep(0.5)
+
+        yield f"data: {json.dumps({'type': 'done', 'message': _cache_range_state['message']})}\n\n"
+
+
 @router.post("/settings/cache-range")
 async def cache_range(req: CacheRangeRequest):
-    global _cache_running, _cache_stop
-    if _cache_running:
+    if _cache_range_state["running"]:
         return JSONResponse({"error": "Cache already running."}, status_code=400)
-
-    _cache_running = True
-    _cache_stop = False
-    start, end = req.start, req.end
-    mode = (req.mode or "smart").lower()
-
-    async def event_stream():
-        global _cache_running, _cache_stop
-        total = end - start + 1
-        count = 0
-        skipped = 0
-
-        if mode == "smart":
-            conn = get_conn()
-            c = conn.cursor()
-            c.execute("SELECT request_id FROM comments WHERE request_id BETWEEN %s AND %s", (start, end))
-            existing = {r[0] for r in c.fetchall()}
-            missing = sorted(set(range(start, end + 1)) - existing)
-            skipped = total - len(missing)
-            c.execute("""
-                SELECT c.request_id FROM comments c
-                LEFT JOIN entity_data e ON c.request_id = e.entity_id
-                WHERE c.request_id BETWEEN %s AND %s AND e.entity_id IS NULL
-            """, (start, end))
-            stale = {r[0] for r in c.fetchall()} - set(missing)
-            stale_metadata = sorted(stale)
-            if not missing and not stale_metadata:
-                _cache_running = False
-                yield f"data: {json.dumps({'type': 'progress', 'percent': 100, 'count': 0, 'total': total, 'skipped': skipped})}\n\n"
-                yield f"data: {json.dumps({'type': 'done', 'message': f'All {total} IDs already cached'})}\n\n"
-                return
-            for rid in missing:
-                if _cache_stop:
-                    break
-                api_get_comments(rid, use_cache=False)
-                refresh_entity_metadata(rid)
-                try:
-                    auto_index_request_web(rid)
-                except Exception:
-                    pass
-                count += 1
-                percent = int((count + skipped) / total * 100)
-                yield f"data: {json.dumps({'type': 'progress', 'percent': percent, 'count': count, 'total': total, 'skipped': skipped})}\n\n"
-            metadata_only_count = 0
-            for rid in stale_metadata:
-                if _cache_stop:
-                    break
-                refresh_entity_metadata(rid)
-                metadata_only_count += 1
-                count += 1
-                percent = int((count + skipped) / total * 100)
-                yield f"data: {json.dumps({'type': 'progress', 'percent': percent, 'count': count, 'total': total, 'skipped': skipped, 'metadata_only': metadata_only_count})}\n\n"
-            _cache_running = False
-            yield f"data: {json.dumps({'type': 'done', 'message': f'Cached {len(missing)} new, refreshed {metadata_only_count} metadata, skipped {skipped} existing ({total} total)'})}\n\n"
-        else:  # force
-            for rid in range(start, end + 1):
-                if _cache_stop:
-                    break
-                delete_embeddings(rid)
-                api_get_comments(rid, use_cache=False)
-                refresh_entity_metadata(rid)
-                try:
-                    auto_index_request_web(rid)
-                except Exception:
-                    pass
-                count += 1
-                percent = int((count / total) * 100)
-                yield f"data: {json.dumps({'type': 'progress', 'percent': percent, 'count': count, 'total': total})}\n\n"
-            _cache_running = False
-            yield f"data: {json.dumps({'type': 'done', 'message': f'Cached {count} requests'})}\n\n"
-
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+    return StreamingResponse(
+        _cache_range_sse(req.start, req.end, (req.mode or "smart").lower()),
+        media_type="text/event-stream",
+    )
 
 
 @router.post("/settings/cache-range-stop")
 async def cache_range_stop():
-    global _cache_stop
-    _cache_stop = True
-    return JSONResponse({"message": "Cache stopping..."})
+    _cache_range_state["stop"] = True
+    return JSONResponse({"message": "Cache stop requested."})
+
+
+@router.get("/settings/cache-range-status")
+async def cache_range_status():
+    return JSONResponse({
+        "running": _cache_range_state["running"],
+        "current": _cache_range_state["current"],
+        "total": _cache_range_state["total"],
+        "message": _cache_range_state["message"],
+        "phase": _cache_range_state["phase"],
+        "skipped": _cache_range_state["skipped"],
+        "metadata_only": _cache_range_state["metadata_only"],
+        "unchanged": _cache_range_state["unchanged"],
+    })

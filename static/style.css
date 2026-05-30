@@ -248,6 +248,36 @@ tr:hover td { background: var(--bg-primary); }
 
 code { font-family: 'Courier New', monospace; font-size: 12px; background: var(--bg-primary); padding: 1px 4px; border-radius: 3px; }
 
+.tooltip-wrap { position: relative; display: inline-block; }
+.tooltip-bubble {
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--bg-card);
+    color: var(--text-primary);
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    line-height: 1.4;
+    white-space: nowrap;
+    z-index: 50;
+    pointer-events: none;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    border: 1px solid var(--border);
+}
+.tooltip-bubble::after {
+    content: '';
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    border: 6px solid transparent;
+    border-top-color: var(--border);
+}
+.tooltip-bubble-wide { white-space: normal; max-width: 320px; }
+[x-cloak] { display: none !important; }
+
 .spinner {
     display: inline-block;
     width: 16px; height: 16px;

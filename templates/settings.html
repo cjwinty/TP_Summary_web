@@ -160,10 +160,21 @@
         <div class="form-row">
             <label>Range:</label>
             <input type="text" class="input" x-model="cacheRangeInput" placeholder="start-end" style="width:150px;">
-            <select class="input" x-model="cacheRangeMode" style="width:auto;">
-                <option value="smart">Smart</option>
-                <option value="force">Force</option>
-            </select>
+            <div class="tooltip-wrap"
+                 @mouseenter="startTooltip('cacheMode')" @mouseleave="stopTooltip()">
+                <select class="input" x-model="cacheRangeMode" style="width:auto;">
+                    <option value="smart">Smart</option>
+                    <option value="force">Force</option>
+                </select>
+                <div class="tooltip-bubble tooltip-bubble-wide" x-show="activeTooltip === 'cacheMode'" x-cloak>
+                    <template x-if="cacheRangeMode === 'smart'">
+                        <span>Smart: Fetches comments, metadata, and embeddings for entities not yet cached. Skips entities already in the cache. Refreshes metadata for entities that have comments but are missing entity_data.</span>
+                    </template>
+                    <template x-if="cacheRangeMode === 'force'">
+                        <span>Force: Re-fetches all data from the Targetprocess API for every entity in the range. Compares old data against new — only regenerates embeddings for entities whose data has actually changed.</span>
+                    </template>
+                </div>
+            </div>
             <button class="btn btn-secondary" @click="cacheRange()" :disabled="cacheRangeRunning" x-show="!cacheRangeRunning">Go</button>
             <button class="btn btn-danger" @click="stopCacheRange()" x-show="cacheRangeRunning">Stop</button>
         </div>
@@ -178,10 +189,21 @@
         </div>
 
         <div class="btn-row" style="margin-top: 8px;">
-            <select class="input" x-model="reindexMode" style="width:auto;" x-bind:disabled="reindexRunning">
-                <option value="missing">Add Missing</option>
-                <option value="full">Full Reindex</option>
-            </select>
+            <div class="tooltip-wrap"
+                 @mouseenter="startTooltip('reindexMode')" @mouseleave="stopTooltip()">
+                <select class="input" x-model="reindexMode" style="width:auto;" x-bind:disabled="reindexRunning">
+                    <option value="missing">Add Missing</option>
+                    <option value="full">Full Reindex</option>
+                </select>
+                <div class="tooltip-bubble tooltip-bubble-wide" x-show="activeTooltip === 'reindexMode'" x-cloak>
+                    <template x-if="reindexMode === 'missing'">
+                        <span>Add Missing: Generates embeddings only for entities that don't have them yet. Preserves all existing embeddings.</span>
+                    </template>
+                    <template x-if="reindexMode === 'full'">
+                        <span>Full Reindex: Truncates the embeddings table then regenerates every embedding from scratch. Required after changes to the metadata prefix or embedding format.</span>
+                    </template>
+                </div>
+            </div>
             <button class="btn btn-primary" @click="reindex()" id="reindex-btn" style="margin-left:6px;" x-show="!reindexRunning">Go</button>
             <button class="btn btn-danger" @click="stopReindex()" id="reindex-stop-btn" style="margin-left:6px;" x-show="reindexRunning">Stop</button>
         </div>
@@ -255,6 +277,16 @@ function settingsData() {
         llmStatus: '',
         cacheStatus: '',
         healthData: null,
+        tooltipTimer: null,
+        activeTooltip: null,
+        startTooltip(name) {
+            this.stopTooltip();
+            this.tooltipTimer = setTimeout(() => { this.activeTooltip = name; }, 5000);
+        },
+        stopTooltip() {
+            if (this.tooltipTimer) { clearTimeout(this.tooltipTimer); this.tooltipTimer = null; }
+            this.activeTooltip = null;
+        },
         async healthCheck() {
             this.cacheStatus = 'Checking health...';
             try {
@@ -357,7 +389,7 @@ function settingsData() {
             }
         },
         async init() {
-            // Check if a reindex is already running server-side
+            // Check if any operations are already running server-side
             try {
                 const resp = await fetch('/rag/reindex-status');
                 const data = await resp.json();
@@ -366,6 +398,36 @@ function settingsData() {
                     this.reindexDone = false;
                     this._setReindexUI(data);
                     this._pollReindexStatus();
+                }
+            } catch (_) {}
+            try {
+                const resp = await fetch('/settings/backfill-status');
+                const data = await resp.json();
+                if (data.running) {
+                    this.backfillRunning = true;
+                    this.backfillDone = false;
+                    this._setBackfillUI(data);
+                    this._pollBackfillStatus();
+                }
+            } catch (_) {}
+            try {
+                const resp = await fetch('/settings/cache-range-status');
+                const data = await resp.json();
+                if (data.running) {
+                    this.cacheRangeRunning = true;
+                    this.cacheRangeDone = false;
+                    this._setCacheRangeUI(data);
+                    this._pollCacheRangeStatus();
+                }
+            } catch (_) {}
+            try {
+                const resp = await fetch('/settings/backfill-project-names-status');
+                const data = await resp.json();
+                if (data.running) {
+                    this.projectNameRunning = true;
+                    this.projectNameDone = false;
+                    this._setProjectNameUI(data);
+                    this._pollProjectNameStatus();
                 }
             } catch (_) {}
         },
@@ -402,6 +464,118 @@ function settingsData() {
                     }
                 } catch (_) {
                     this._pollReindexStatus();
+                }
+            }, 2000);
+        },
+        _setBackfillUI(data) {
+            const barFill = document.getElementById('backfill-bar-fill');
+            const pct = document.getElementById('backfill-pct');
+            const status = document.getElementById('backfill-status');
+            const curPct = data.total > 0 ? Math.round(data.current / data.total * 100) : 0;
+            if (barFill) barFill.style.width = curPct + '%';
+            if (pct) pct.textContent = curPct + '%';
+            if (status) status.textContent = data.message || 'Backfill in progress...';
+        },
+        _pollBackfillStatus() {
+            setTimeout(async () => {
+                try {
+                    const resp = await fetch('/settings/backfill-status');
+                    const data = await resp.json();
+                    if (data.running) {
+                        this._setBackfillUI(data);
+                        this._pollBackfillStatus();
+                    } else {
+                        this.backfillRunning = false;
+                        this.backfillDone = true;
+                        const barFill = document.getElementById('backfill-bar-fill');
+                        const pct = document.getElementById('backfill-pct');
+                        const status = document.getElementById('backfill-status');
+                        if (barFill) barFill.style.width = '100%';
+                        if (pct) pct.textContent = '100%';
+                        if (status) status.textContent = data.message || 'Backfill complete.';
+                        fetch('/settings/cache-stats').then(r => r.text()).then(html => {
+                            const el = document.getElementById('cache-stats');
+                            if (el) el.innerHTML = html;
+                        });
+                    }
+                } catch (_) {
+                    this._pollBackfillStatus();
+                }
+            }, 2000);
+        },
+        _setCacheRangeUI(data) {
+            const barFill = document.getElementById('cache-range-bar-fill');
+            const pct = document.getElementById('cache-range-pct');
+            const status = document.getElementById('cache-range-status');
+            const curPct = data.total > 0 ? Math.round(data.current / data.total * 100) : 0;
+            if (barFill) barFill.style.width = curPct + '%';
+            if (pct) pct.textContent = curPct + '%';
+            let label = (data.phase || 'metadata') + ': ' + data.current + '/' + data.total;
+            if (data.skipped) label += ' (' + data.skipped + ' skipped)';
+            if (data.metadata_only) label += ', ' + data.metadata_only + ' metadata';
+            if (data.unchanged) label += ', ' + data.unchanged + ' unchanged';
+            if (status) status.textContent = data.message || label;
+        },
+        _pollCacheRangeStatus() {
+            setTimeout(async () => {
+                try {
+                    const resp = await fetch('/settings/cache-range-status');
+                    const data = await resp.json();
+                    if (data.running) {
+                        this._setCacheRangeUI(data);
+                        this._pollCacheRangeStatus();
+                    } else {
+                        this.cacheRangeRunning = false;
+                        this.cacheRangeDone = true;
+                        const barFill = document.getElementById('cache-range-bar-fill');
+                        const pct = document.getElementById('cache-range-pct');
+                        const status = document.getElementById('cache-range-status');
+                        if (barFill) barFill.style.width = '100%';
+                        if (pct) pct.textContent = '100%';
+                        if (status) status.textContent = data.message || 'Cache range complete.';
+                        fetch('/settings/cache-stats').then(r => r.text()).then(html => {
+                            const el = document.getElementById('cache-stats');
+                            if (el) el.innerHTML = html;
+                        });
+                    }
+                } catch (_) {
+                    this._pollCacheRangeStatus();
+                }
+            }, 2000);
+        },
+        _setProjectNameUI(data) {
+            const barFill = document.getElementById('project-name-bar-fill');
+            const pct = document.getElementById('project-name-pct');
+            const status = document.getElementById('project-name-status');
+            const curPct = data.total > 0 ? Math.round(data.current / data.total * 100) : 0;
+            if (barFill) barFill.style.width = curPct + '%';
+            if (pct) pct.textContent = curPct + '%';
+            if (status) status.textContent = data.message || 'Resolving project names...';
+        },
+        _pollProjectNameStatus() {
+            setTimeout(async () => {
+                try {
+                    const resp = await fetch('/settings/backfill-project-names-status');
+                    const data = await resp.json();
+                    if (data.running) {
+                        this._setProjectNameUI(data);
+                        this._pollProjectNameStatus();
+                    } else {
+                        this.projectNameRunning = false;
+                        this.projectNameDone = true;
+                        const barFill = document.getElementById('project-name-bar-fill');
+                        const pct = document.getElementById('project-name-pct');
+                        const status = document.getElementById('project-name-status');
+                        if (barFill) barFill.style.width = '100%';
+                        if (pct) pct.textContent = '100%';
+                        if (status) status.textContent = data.message || 'Project names complete.';
+                        fetch('/settings/cache-stats').then(r => r.text()).then(html => {
+                            const el = document.getElementById('cache-stats');
+                            if (el) el.innerHTML = html;
+                        });
+                    }
+                } catch (_) {
+                    this._pollProjectNameStatus();
                 }
             }, 2000);
         },
@@ -684,13 +858,11 @@ function settingsData() {
                             const p = msg.percent || 0;
                             if (barFill) barFill.style.width = p + '%';
                             if (pct) pct.textContent = p + '%';
-                            if (msg.metadata_only) {
-                                if (status) status.textContent = msg.count + '/' + msg.total + ' (' + msg.skipped + ' skipped, ' + msg.metadata_only + ' metadata)';
-                            } else if (msg.skipped) {
-                                if (status) status.textContent = msg.count + '/' + msg.total + ' (' + msg.skipped + ' skipped)';
-                            } else {
-                                if (status) status.textContent = msg.count + '/' + msg.total;
-                            }
+                            let label = (msg.phase || 'metadata') + ': ' + msg.count + '/' + msg.total;
+                            if (msg.skipped) label += ' (' + msg.skipped + ' skipped)';
+                            if (msg.metadata_only) label += ', ' + msg.metadata_only + ' metadata';
+                            if (msg.unchanged) label += ', ' + msg.unchanged + ' unchanged';
+                            if (status) status.textContent = label;
                         } else if (msg.type === 'done') {
                             if (status) status.textContent = msg.message;
                             if (barFill) barFill.style.width = '100%';

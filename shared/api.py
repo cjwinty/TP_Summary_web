@@ -501,12 +501,13 @@ def get_relations(entity_id: int) -> list[dict]:
     return relations
 
 
-def refresh_entity_metadata(entity_id: int, depth: int = 0, seen: set | None = None) -> None:
+def refresh_entity_metadata(entity_id: int, depth: int = 0, seen: set | None = None, force: bool = False) -> None:
     """Fetch and persist entity metadata (type, custom fields, relations) for an entity.
 
     Operates one level deep by default — also saves metadata for direct relations.
     Uses a seen set to avoid cycles.
-    Checks the DB cache first and skips API calls if all data already exists.
+    When force=False (default), checks the DB cache first and skips API calls if data exists.
+    When force=True, always fetches fresh data from the API and overwrites the cache.
     """
     if seen is None:
         seen = set()
@@ -525,7 +526,7 @@ def refresh_entity_metadata(entity_id: int, depth: int = 0, seen: set | None = N
             from database import get_entity_data as _get_db_ed, save_entity_data as _save_ed
             from database import get_relations as _get_db_rel, save_relations as _save_rel
 
-            if not _get_db_ed(entity_id):
+            if force or not _get_db_ed(entity_id):
                 entity_data = get_entity_data(entity_id, entity_type)
                 if entity_data:
                     try:
@@ -533,17 +534,18 @@ def refresh_entity_metadata(entity_id: int, depth: int = 0, seen: set | None = N
                     except Exception:
                         logger.warning("Failed to save entity_data for %s", entity_id)
 
-            relations = _get_db_rel(entity_id)
-            if not relations:
+            if force or not _get_db_rel(entity_id):
                 try:
                     relations = get_relations(entity_id)
                     if relations:
                         _save_rel(entity_id, entity_type, relations)
                 except Exception:
                     logger.warning("Failed to save relations for %s", entity_id)
+            else:
+                relations = _get_db_rel(entity_id)
 
             if depth == 0 and relations:
                 for rel in relations:
                     other_id = rel.get("related_entity_id")
                     if other_id and other_id not in seen:
-                        refresh_entity_metadata(other_id, depth=1, seen=seen)
+                        refresh_entity_metadata(other_id, depth=1, seen=seen, force=force)
