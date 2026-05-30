@@ -21,6 +21,7 @@ Runs uvicorn on `http://localhost:8000` by default. PostgreSQL must be running l
 
 ```
 main.py
+├── VERSION               — Major.minor version base; combined with git commit count at runtime
 ├── routes/
 │   ├── summarise.py      — /summarise, /cache/update, /cached-ids
 │   ├── browse.py         — /browse, /browse/projects, /browse/entity
@@ -32,13 +33,23 @@ main.py
 ├── shared/
 │   ├── api.py            — TP API v1/v2 calls (comments, entity data, relations, projects)
 │   ├── analysis.py       — LLM prompt templates and summarisation logic
-│   ├── config.py         — .env config loader, LLM provider config
+│   ├── config.py         — .env config loader, LLM provider config, dynamic version from VERSION file + git commit count
 │   ├── llm_providers.py  — BaseLLMProvider, LocalLLMProvider, CloudLLMProvider, LLMClient
 │   └── prompt_chain_executor.py — multi-step prompt chains
 ├── database.py           — PostgreSQL CRUD (psycopg2, all tables)
 ├── jinja_env.py          — Jinja2 template environment
 └── templates/            — Jinja2 HTML templates (base, index, browse, comments, settings, search, chat)
 ```
+
+## Versioning
+
+Version shown in the sidebar is computed at startup:
+```
+v{MAJOR}.{MINOR}.{COMMIT_COUNT}
+```
+- `MAJOR.MINOR` read from `VERSION` file at repo root (manually managed)
+- `COMMIT_COUNT` from `git rev-list --count HEAD` (auto, deterministic across clones)
+- Falls back to `0.0.0-dev` if `VERSION` file or git repo is unavailable
 
 ## Database (PostgreSQL + pgvector)
 

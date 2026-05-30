@@ -26,7 +26,22 @@ BASE_URL = os.getenv("TP_BASE_URL", "https://damarel.tpondemand.com/api/v2")
 USERNAME = os.getenv("TP_USERNAME")
 PASSWORD = os.getenv("TP_PASSWORD")
 PROJECT_NAME = os.getenv("TP_PROJECT_NAME", "External Support")
-VERSION = "1.4.1"
+def _get_version():
+    import subprocess
+    base_dir = get_base_dir()
+    version_file = os.path.join(base_dir, "VERSION")
+    try:
+        with open(version_file) as f:
+            base = f.read().strip()
+        count = subprocess.check_output(
+            ["git", "rev-list", "--count", "HEAD"],
+            cwd=base_dir, text=True, stderr=subprocess.DEVNULL
+        ).strip()
+        return f"{base}.{count}"
+    except Exception:
+        return "0.0.0-dev"
+
+VERSION = _get_version()
 TP_API_TOKEN = os.getenv("TP_API_TOKEN")
 
 CONFIG_FILE = os.path.join(get_base_dir(), "user_config.json")
