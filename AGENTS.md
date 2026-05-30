@@ -177,7 +177,8 @@ All routes are defined under their respective router in `routes/`. The `main.py`
 | `clear_entity_data()` / `clear_entity_relations()` / `clear_all_chat_history()` / `clear_all_cached_data()` | Targeted deletion |
 | `_build_embedding_prefix(entity_id, entity_type, entity_data)` | Build compact metadata prefix for embedding chunks |
 | `_build_metadata_blob(entity_id, entity_type, entity_data)` | Build full ticket profile for standalone metadata embedding |
-| `auto_index_request_web(request_id, index_summary=True)` | Generate embeddings for entity: deletes existing, prepends metadata prefix to comments/summaries, creates metadata blob |
+| `_get_write_conn()` | Per-thread psycopg2 connection (via `threading.local()`) for concurrent embedding writes |
+| `auto_index_request_web(request_id, index_summary=True)` | Generate embeddings for entity: collects all texts, calls `LLMClient.generate_embeddings_list()` once (batch API), deletes existing, inserts all chunks |
 | `get_pending_entity_ids_for_metadata()` | Find entities with comments but no entity_data row |
 | `backfill_metadata_for_ids(ids, workers=20)` | Parallel metadata fetch for many IDs using thread pool |
 
@@ -185,6 +186,8 @@ All routes are defined under their respective router in `routes/`. The `main.py`
 - `BaseLLMProvider` → `LocalLLMProvider` (Ollama, LM Studio) / `CloudLLMProvider` (OpenAI-compat, AWS Bedrock)
 - `LLMClient` singleton manages provider selection at runtime
 - `generate_embedding()` uses the provider's native embedding API; dimension normalised to 1536
+- `generate_embeddings_list(texts)` — batch embedding via single API call (native batch for OpenAI-compat/Ollama, sequential fallback for Bedrock). Reduces API calls per entity from N to 1.
+- `LLMClient` holds class lock only for `_ensure_provider()` validation; HTTP API calls run outside the lock, enabling true concurrent embedding across threads
 
 ### `shared/analysis.py` — Prompt templates
 - `summarise_comments()` — main summarisation prompt
@@ -201,7 +204,7 @@ The Settings page provides unified cache management:
 | **Health Check** | Row counts, orphan detection, index listing, DB size |
 | **Optimise** | VACUUM ANALYZE + orphan cleanup across all tables |
 | **Clear buttons** | Individual clear for Entity Data, Entity Relations, Summaries, Chat History; Clear All Cache (FK-safe order) |
-| **Entity Metadata Backfill** | SSE: find entities with comments but no entity_data; fetch+store metadata |
+| **Entity Metadata Backfill** | SSE: two-phase parallel (ThreadPoolExecutor 20 workers). Phase 1: metadata + relations fetch. Phase 2: embedding generation. Reports phase transitions to UI. |
 | **Resolve Project Names** | SSE: single TP API call to get all projects; backfill NULL project_name values |
 | **Cache Range** | SSE: cache a range of entity IDs with progress. Smart = missing only + metadata refresh; Force = full re-fetch |
 

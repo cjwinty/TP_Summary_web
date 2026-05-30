@@ -73,10 +73,10 @@ Prompts receive these variables automatically:
 |-----------|---------|-----------|
 | **Smart cache range** | SSE | Skips already-cached entities; refreshes entity_data for entities missing it |
 | **Force cache range** | SSE | Deletes embeddings, re-fetches comments + metadata for every entity in range |
-| **Entity Metadata Backfill** | SSE + bg thread | Finds entities with comments but no entity_data row; fetches + saves |
+| **Entity Metadata Backfill** | SSE + bg thread pool | Two-phase parallel (20 workers): Phase 1 fetches metadata + relations, Phase 2 generates embeddings. SSE reports phase transitions. |
 | **Project Name Backfill** | SSE (inline) | Single API call for all projects; updates all NULL `project_name` rows |
-| **Reindex (missing)** | SSE | Generates embeddings (with metadata prefix + blob) only for entities that lack them |
-| **Reindex (full)** | SSE | Regenerates all embeddings with metadata prefix + blob for every entity |
+| **Reindex (missing)** | SSE + bg thread pool | Generates embeddings only for entities that lack them; 8-worker parallel batch system |
+| **Reindex (full)** | SSE + bg thread pool | TRUNCATEs then regenerates all embeddings; 8 workers calling `auto_index_request_web()` with per-thread DB connections and batch LLM embedding API |
 
 ## Vector Search Indexing
 
