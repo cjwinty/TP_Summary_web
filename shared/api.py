@@ -14,6 +14,14 @@ logger = logging.getLogger(__name__)
 
 CA_BUNDLE = certifi.where()
 
+
+_session = requests.Session()
+_cached_auth = None
+
+
+def _get_session():
+    return _session
+
 V2_TO_V1_ENDPOINT = {
     "Request": "requests",
     "UserStory": "userstories",
@@ -52,22 +60,27 @@ def _get_local_attr(parent, local_name, attr):
 
 
 def _get_auth():
-    if TP_API_TOKEN:
-        logger.info("Using API token authentication")
-        return None, None, {"access_token": TP_API_TOKEN}
-    if USERNAME and PASSWORD:
-        logger.info("Using basic auth (username/password)")
-        return (USERNAME, PASSWORD), None, {}
-    logger.warning("No API credentials configured — set TP_API_TOKEN or TP_USERNAME/TP_PASSWORD in .env")
-    return None, None, {}
+    global _cached_auth
+    if _cached_auth is None:
+        if TP_API_TOKEN:
+            logger.debug("Using API token authentication")
+            _cached_auth = (None, None, {"access_token": TP_API_TOKEN})
+        elif USERNAME and PASSWORD:
+            logger.debug("Using basic auth (username/password)")
+            _cached_auth = ((USERNAME, PASSWORD), None, {})
+        else:
+            logger.warning("No API credentials configured — set TP_API_TOKEN or TP_USERNAME/TP_PASSWORD in .env")
+            _cached_auth = (None, None, {})
+    return _cached_auth
 
 
 def make_request(url, params, retries=3):
+    sess = _get_session()
     for attempt in range(retries):
         try:
             auth, headers, extra_params = _get_auth()
             merged_params = {**params, **extra_params} if extra_params else params
-            r = requests.get(
+            r = sess.get(
                 url, params=merged_params, auth=auth, headers=headers or None,
                 timeout=30, verify=CA_BUNDLE,
             )
@@ -190,6 +203,121 @@ def get_entity_data(entity_id: int, entity_type: str) -> dict | None:
         logger.debug("No v1 endpoint mapping for entity type '%s'", entity_type)
         return None
     url = f"{v1_base}/{v1_path}/{entity_id}"
+    params = {"include": "[id,EntityState,Description,CreateDate,Project]"}
+    auth, headers, extra_params = _get_auth()
+    merged_params = {**params, **extra_params} if extra_params else params
+    sess = _get_session()
+    for attempt in range(3):
+        try:
+            r = sess.get(
+                url, params=merged_params, auth=auth, headers=headers or None,
+                timeout=30, verify=CA_BUNDLE,
+            )
+            if r.status_code != 200:
+                logger.warning("Entity data API returned status %d for %s %s", r.status_code, entity_type, entity_id)
+                return None
+            
+            try:
+                root = ET.fromstring(r.text)
+            except ET.ParseError:
+                logger.warning("Failed to parse XML for %s %s", entity_type, entity_id)
+                return None
+
+            result = {}
+
+            # --- 1. EntityState (High Priority) ---
+            es = _find_local(root, "EntityState")
+            if es is not None:
+                name = es.get("Name") or _get_local_text(es, "Name")
+                if name:
+                    result["entity_state"] = name
+                es_id = es.get("Id") or _get_local_text(es, "Id")
+                if es_id:
+                    try:
+                        result["entity_state_id"] = int(es_id)
+                    except ValueError:
+                        pass
+
+            # --- 2. Description & CreateDate (High Priority) ---
+            desc = _find_local(root, "Description")
+            if desc is not None and desc.text:
+                result["description"] = desc.text if desc.text != "true" else ""
+
+            cd = _find_local(root, "CreateDate")
+            if cd is not None and cd.text:
+                result["create_date"] = cd.text
+
+            # --- 3. Project (High Priority) ---
+            proj = _find_local(root, "Project")
+            if proj is not None:
+                pid = proj.get("Id") or _get_local_text(proj, "Id")
+                if pid:
+                    try:
+                        result["project_id"] = int(pid)
+                    except ValueError:
+                        pass
+                pname = proj.get("Name") or _get_local_text(proj, "Name")
+                if pname:
+                    result["project_name"] = pname
+
+            # --- 4. Custom Fields Mapping (Existing Logic) ---
+            cf = _find_local(root, "CustomFields")
+            if cf is not None:
+                custom_fields = {}
+                for field_el in cf:
+                    tag = field_el.tag
+                    if '}' in tag:
+                        tag = tag.split('}', 1)[1]
+                    if tag != "Field":
+                        continue
+                    fname = field_el.get("Name") or _get_local_text(field_el, "Name")
+                    fvalue = field_el.get("Value") or _get_local_text(field_el, "Value")
+                    if fname and fvalue:
+                        val = fvalue.strip()
+                        if val and val != "true":
+                            custom_fields[fname] = val
+                        elif val == "true":
+                            custom_fields[fname] = "Yes"
+                if custom_fields:
+                    result["custom_fields"] = custom_fields
+                    col_map = {
+                        "client": ("Client", "client"),
+                        "product": ("Product", "product"),
+                        "release_version": ("Release Version", "release_version"),
+                        "site": ("Site", "site"),
+                        "customer_ref": ("CustomerRef",),
+                        "internal_priority": ("Internal Priority",),
+                        "support_level": ("Support Level",),
+                        "next_action": ("Next Action",),
+                        "paid_work": ("Paid Work",),
+                        "downtime": ("Downtime",),
+                        "out_of_hours": ("Out of hours",),
+                        "customer_chased_date": ("Customer Chased date",),
+                        "stop_feedback_request": ("Stop Feedback Request",),
+                    }
+                    for col, keys in col_map.items():
+                        for k in keys:
+                            v = custom_fields.get(k)
+                            if v:
+                                result[col] = v
+                                break
+
+            if not result:
+                logger.warning("No data extracted from v1 API response for %s %s", entity_type, entity_id)
+                return None
+            
+            # Add current timestamp for completeness
+            result["fetched_at"] = datetime.now().isoformat()
+            return result
+
+        except requests.RequestException:
+            if attempt == 2:
+                logger.warning("All attempts failed fetching entity data for %s %s", entity_type, entity_id)
+                return None
+        except Exception:
+            logger.warning("Unexpected error in get_entity_data for %s %s", entity_type, entity_id)
+            return None
+    url = f"{v1_base}/{v1_path}/{entity_id}"
     params = {"include": "[id,customFields]"}
 
     auth, headers, extra_params = _get_auth()
@@ -226,6 +354,7 @@ def get_entity_data(entity_id: int, entity_type: str) -> dict | None:
 
             desc = _find_local(root, "Description")
             if desc is not None and desc.text:
+                # Descriptions are usually single elements, not booleans
                 result["description"] = desc.text if desc.text != "true" else ""
 
             cd = _find_local(root, "CreateDate")

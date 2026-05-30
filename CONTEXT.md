@@ -39,7 +39,7 @@ The application helps users analyse support tickets by retrieving structured inf
 
 | Use Case | Data Sources | Method |
 |----------|-------------|--------|
-| **RAG / Chatbot** | Comments + Summaries + Entity Data + Relations | Vector search against `embeddings` (pgvector `<->`), results grouped by entity, enriched with full `entity_data` + `entity_relations` from DB. Every chunk carries a metadata prefix (state, client, product). A standalone metadata blob per entity makes the holistic ticket profile searchable. |
+| **RAG / Chatbot** | Comments + Summaries + Entity Data + Relations | Vector search against `embeddings` (pgvector `<=>` cosine distance, HNSW index), results grouped by entity, enriched with full `entity_data` + `entity_relations` from DB. Every chunk carries a metadata prefix (state, client, product). A standalone metadata blob per entity makes the holistic ticket profile searchable. Client filter joins `entity_data` (not deprecated `request_custom_fields`). |
 | **Summarisation** | Comments + existing summary | All text concatenated into one block; entity type + ID injected in the prompt header |
 | **Browse** | `entity_data` + `entity_relations` | Direct SQL queries, rendered in Alpine.js-driven Jinja2 templates |
 | **Search** | Comments + custom fields | Text search across comment data with optional custom field and date filters |
@@ -77,5 +77,17 @@ Prompts receive these variables automatically:
 | **Project Name Backfill** | SSE (inline) | Single API call for all projects; updates all NULL `project_name` rows |
 | **Reindex (missing)** | SSE | Generates embeddings (with metadata prefix + blob) only for entities that lack them |
 | **Reindex (full)** | SSE | Regenerates all embeddings with metadata prefix + blob for every entity |
+
+## Vector Search Indexing
+
+The `embeddings` table uses an **HNSW (Hierarchical Navigable Small World)** index on the `embedding` column using the `vector_cosine_ops` operator class. This provides sub-linear vector search performance — queries against ~35k embeddings return in single-digit milliseconds vs hundreds of milliseconds for sequential scan.
+
+- **Distance operator**: `<=>` (cosine distance). Lower values = more semantically similar. Range: 0 (identical direction) to 2 (opposite).
+- **Index type**: HNSW (supported by pgvector 0.8.2+). Chosen over IVFFlat for better recall without tuning, low memory overhead at current scale.
+- **Creation**: `database.py:init_db()` with `CREATE INDEX IF NOT EXISTS ... USING hnsw (embedding vector_cosine_ops)`. Gracefully skipped if pgvector version lacks HNSW support.
+
+## Deprecated Tables
+
+`request_custom_fields` is a dead data source — no new rows written since SQLite migration. All queries (client filter, search) now use `entity_data` instead. The table and its indexes are preserved for backward compatibility but not queried by any route.
 
 All long-running operations use SSE streaming with a progress bar. The same pattern is reused across reindex, backfills, and cache range.

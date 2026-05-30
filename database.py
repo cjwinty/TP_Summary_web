@@ -8,6 +8,7 @@ import re
 import difflib
 from datetime import datetime
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 logger = logging.getLogger(__name__)
 
@@ -269,6 +270,11 @@ def init_db():
     c.execute("CREATE INDEX IF NOT EXISTS idx_custom_fields_release ON request_custom_fields(release_version)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_custom_fields_site ON request_custom_fields(site)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_embeddings_request ON embeddings(request_id)")
+    try:
+        c.execute("CREATE INDEX IF NOT EXISTS idx_embeddings_hnsw_cosine ON embeddings USING hnsw (embedding vector_cosine_ops)")
+    except Exception:
+        conn.rollback()
+        logger.warning("Could not create HNSW index on embeddings (may need superuser). Cosine queries will still work via sequential scan.")
     c.execute("CREATE INDEX IF NOT EXISTS idx_prompts_name ON prompts(name)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_prompt_chains_name ON prompt_chains(name)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_entity_data_type ON entity_data(entity_type)")
@@ -546,7 +552,7 @@ def get_custom_fields(request_id):
         conn = _get_conn()
         c = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         c.execute(
-            "SELECT client, product, release_version, site, fetched_at FROM request_custom_fields WHERE request_id = %s",
+            "SELECT client, product, release_version, site, fetched_at FROM entity_data WHERE entity_id = %s",
             (request_id,),
         )
         row = c.fetchone()
@@ -555,10 +561,10 @@ def get_custom_fields(request_id):
         return None, None
 
     fields = {
-        "Client": row["client"],
-        "Product": row["product"],
-        "Release Version": row["release_version"],
-        "Site": row["site"],
+        "Client": row["client"] or "",
+        "Product": row["product"] or "",
+        "Release Version": row["release_version"] or "",
+        "Site": row["site"] or "",
     }
     fetched_at = row["fetched_at"]
 
@@ -744,18 +750,18 @@ def search_cached_comments(query, custom_field_filter=None, date_filter=None, li
         conn = _get_conn()
         c = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         params = [f"%{query}%"]
-        sql = "SELECT c.request_id, c.comment_data, c.fetched_at, c.entity_type, cf.client, cf.product FROM comments c LEFT JOIN request_custom_fields cf ON c.request_id = cf.request_id WHERE c.comment_data::text ILIKE %s"
+        sql = "SELECT c.request_id, c.comment_data, c.fetched_at, c.entity_type, ed.client, ed.product FROM comments c LEFT JOIN entity_data ed ON c.request_id = ed.entity_id WHERE c.comment_data::text ILIKE %s"
 
         if custom_field_filter:
             if isinstance(custom_field_filter, dict) and "filters" in custom_field_filter:
                 logic = custom_field_filter.get("logic", "AND")
                 clauses = []
                 for f in custom_field_filter["filters"]:
-                    clauses.append("cf.%s ILIKE %s" % (f["field_name"], "%%s%%"))
+                    clauses.append("ed.%s ILIKE %s" % (f["field_name"], "%%s%%"))
                     params.append(f["field_value"])
                 sql += " AND (" + (" %s " % logic).join(clauses) + ")"
             else:
-                sql += " AND cf.%s ILIKE %s" % (custom_field_filter["field_name"], "%%%s%%")
+                sql += " AND ed.%s ILIKE %s" % (custom_field_filter["field_name"], "%%%s%%")
                 params.append(custom_field_filter["field_value"])
 
         if date_filter:
@@ -811,10 +817,10 @@ def search_and_fetch_full(query, custom_field_filter=None, date_filter=None, lim
         c = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         params = [f"%{query}%"]
         sql = """SELECT c.request_id, c.comment_data, c.fetched_at, c.entity_type,
-                        cf.client, cf.product, cf.release_version, cf.site,
+                        ed.client, ed.product, ed.release_version, ed.site,
                         s.summary_text as summary
                  FROM comments c
-                 LEFT JOIN request_custom_fields cf ON c.request_id = cf.request_id
+                 LEFT JOIN entity_data ed ON c.request_id = ed.entity_id
                  LEFT JOIN summaries s ON c.request_id = s.request_id
                  WHERE c.comment_data::text ILIKE %s"""
 
@@ -824,12 +830,12 @@ def search_and_fetch_full(query, custom_field_filter=None, date_filter=None, lim
                 clauses = []
                 for f in custom_field_filter["filters"]:
                     safe_field = re.sub(r'[^a-z_]', '', f["field_name"].lower().replace(" ", "_"))
-                    clauses.append(f"cf.{safe_field} ILIKE %s")
+                    clauses.append(f"ed.{safe_field} ILIKE %s")
                     params.append(f"%{f['field_value']}%")
                 sql += " AND (" + (" %s " % logic).join(clauses) + ")"
             else:
                 safe_field = re.sub(r'[^a-z_]', '', custom_field_filter["field_name"].lower().replace(" ", "_"))
-                sql += f" AND cf.{safe_field} ILIKE %s"
+                sql += f" AND ed.{safe_field} ILIKE %s"
                 params.append(f"%{custom_field_filter['field_value']}%")
 
         sql += " LIMIT %s"
@@ -1411,3 +1417,40 @@ def list_runs(chain_id, limit=50):
             (chain_id, limit),
         )
         return [dict(r) for r in c.fetchall()]
+
+
+def get_pending_entity_ids_for_metadata():
+    """Return entity IDs that have comments but no entity_data row."""
+    with _lock:
+        conn = _get_conn()
+        c = conn.cursor()
+        c.execute("""
+            SELECT DISTINCT c.request_id
+            FROM comments c
+            LEFT JOIN entity_data e ON c.request_id = e.entity_id
+            WHERE e.entity_id IS NULL
+            ORDER BY c.request_id
+        """)
+        return [r[0] for r in c.fetchall()]
+
+
+def backfill_metadata_for_ids(ids, workers=20):
+    """Call refresh_entity_metadata for each ID in the list using a thread pool.
+    Returns (success_count, total)."""
+    from shared.api import refresh_entity_metadata
+    total = len(ids)
+    success = 0
+    done = 0
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        fut_map = {executor.submit(refresh_entity_metadata, eid): eid for eid in ids}
+        for fut in as_completed(fut_map):
+            eid = fut_map[fut]
+            done += 1
+            try:
+                fut.result()
+                success += 1
+            except Exception:
+                logger.warning("Failed to backfill metadata for entity %s", eid)
+            if done % 100 == 0 or done == total:
+                logger.info("Backfill progress: %d / %d (success: %d)", done, total, success)
+    return success, total

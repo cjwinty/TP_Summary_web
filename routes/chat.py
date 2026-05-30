@@ -123,16 +123,16 @@ async def chat_send(req: ChatSendRequest):
     if has_embeddings and query_embedding and any(v != 0.0 for v in query_embedding):
         if req.client:
             c.execute(
-                "SELECT e.request_id, e.chunk_text, e.entity_type, e.chunk_type, e.embedding <-> %s::vector AS distance "
+                "SELECT e.request_id, e.chunk_text, e.entity_type, e.chunk_type, e.embedding <=> %s::vector AS distance "
                 "FROM embeddings e "
-                "INNER JOIN request_custom_fields rcf ON e.request_id = rcf.request_id "
-                "WHERE rcf.client ILIKE %s "
+                "INNER JOIN entity_data ed ON e.request_id = ed.entity_id "
+                "WHERE ed.client ILIKE %s "
                 "ORDER BY distance LIMIT %s",
                 (json.dumps(query_embedding), f"%{req.client}%", top_k),
             )
         else:
             c.execute(
-                "SELECT e.request_id, e.chunk_text, e.entity_type, e.chunk_type, e.embedding <-> %s::vector AS distance "
+                "SELECT e.request_id, e.chunk_text, e.entity_type, e.chunk_type, e.embedding <=> %s::vector AS distance "
                 "FROM embeddings e ORDER BY distance LIMIT %s",
                 (json.dumps(query_embedding), top_k),
             )

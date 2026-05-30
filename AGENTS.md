@@ -50,8 +50,8 @@ All tables under `public` schema:
 | `summaries` | LLM-generated summary blobs | No |
 | `entity_data` | Entity metadata (description, state, project, 9 custom field columns + JSONB) | No |
 | `entity_relations` | Links between entities (one level deep) | No |
-| `request_custom_fields` | Legacy table (still populated) | No |
-| `embeddings` | Vector embeddings for RAG, vector(1536) column. Three `chunk_type` values: `comment`, `summary`, `metadata` | Yes (pgvector `<->` operator) |
+| `request_custom_fields` | Legacy table (no longer queried — use `entity_data` instead) | No |
+| `embeddings` | Vector embeddings for RAG, vector(1536) column. Three `chunk_type` values: `comment`, `summary`, `metadata`. HNSW index (`idx_embeddings_hnsw_cosine`) for sub-linear search. | Yes (pgvector `<=>` operator) |
 | `chat_history` | Chat session messages | No |
 | `prompts` | Prompt templates | No |
 | `prompt_chains` | Multi-step prompt chain definitions | No |
@@ -59,7 +59,7 @@ All tables under `public` schema:
 | `prompt_chain_runs` | Execution records for prompt chains | No |
 | `prompt_chain_run_steps` | Per-step execution results | No |
 
-Embedding dimension normalised to 1536. Cosine distance via pgvector `<->` operator.
+Embedding dimension normalised to 1536. Cosine distance via pgvector `<=>` operator. HNSW index (`idx_embeddings_hnsw_cosine`) for sub-linear vector search performance.
 
 ### Embedding structure
 
@@ -178,6 +178,8 @@ All routes are defined under their respective router in `routes/`. The `main.py`
 | `_build_embedding_prefix(entity_id, entity_type, entity_data)` | Build compact metadata prefix for embedding chunks |
 | `_build_metadata_blob(entity_id, entity_type, entity_data)` | Build full ticket profile for standalone metadata embedding |
 | `auto_index_request_web(request_id, index_summary=True)` | Generate embeddings for entity: deletes existing, prepends metadata prefix to comments/summaries, creates metadata blob |
+| `get_pending_entity_ids_for_metadata()` | Find entities with comments but no entity_data row |
+| `backfill_metadata_for_ids(ids, workers=20)` | Parallel metadata fetch for many IDs using thread pool |
 
 ### `shared/llm_providers.py` — LLM abstraction
 - `BaseLLMProvider` → `LocalLLMProvider` (Ollama, LM Studio) / `CloudLLMProvider` (OpenAI-compat, AWS Bedrock)

@@ -333,7 +333,7 @@ async def search_rag(req: SearchRequest):
     conn = get_conn()
     c = conn.cursor()
     c.execute(
-        "SELECT e.request_id, e.chunk_text, e.entity_type, e.embedding <-> %s::vector AS distance "
+        "SELECT e.request_id, e.chunk_text, e.entity_type, e.embedding <=> %s::vector AS distance "
         "FROM embeddings e "
         "ORDER BY distance "
         "LIMIT %s",
@@ -368,17 +368,17 @@ async def ask_rag(req: AskRequest):
 
         if req.client:
             c.execute(
-                "SELECT e.request_id, e.chunk_text, e.entity_type, e.chunk_type, e.embedding <-> %s::vector AS distance "
+                "SELECT e.request_id, e.chunk_text, e.entity_type, e.chunk_type, e.embedding <=> %s::vector AS distance "
                 "FROM embeddings e "
-                "INNER JOIN request_custom_fields rcf ON e.request_id = rcf.request_id "
-                "WHERE rcf.client ILIKE %s "
+                "INNER JOIN entity_data ed ON e.request_id = ed.entity_id "
+                "WHERE ed.client ILIKE %s "
                 "ORDER BY distance "
                 "LIMIT %s",
                 (json.dumps(query_embedding), f"%{req.client}%", req.top_k * 2),
             )
         else:
             c.execute(
-                "SELECT e.request_id, e.chunk_text, e.entity_type, e.chunk_type, e.embedding <-> %s::vector AS distance "
+                "SELECT e.request_id, e.chunk_text, e.entity_type, e.chunk_type, e.embedding <=> %s::vector AS distance "
                 "FROM embeddings e "
                 "ORDER BY distance "
                 "LIMIT %s",
@@ -506,7 +506,7 @@ async def find_fixes(req: FindFixesRequest):
     conn = get_conn()
     c = conn.cursor()
     c.execute(
-        "SELECT e.request_id, e.chunk_text, e.entity_type, e.embedding <-> %s::vector AS distance, e.chunk_type "
+        "SELECT e.request_id, e.chunk_text, e.entity_type, e.embedding <=> %s::vector AS distance, e.chunk_type "
         "FROM embeddings e "
         "WHERE e.request_id != %s "
         "ORDER BY distance "
