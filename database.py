@@ -22,6 +22,7 @@ DB_CONFIG = {
 
 _connection = None
 _lock = threading.Lock()
+_write_conn_local = threading.local()
 
 
 def _get_conn():
@@ -38,6 +39,13 @@ def _close_conn():
     if _connection:
         _connection.close()
         _connection = None
+
+
+def _get_write_conn():
+    if not hasattr(_write_conn_local, 'conn') or _write_conn_local.conn.closed:
+        _write_conn_local.conn = psycopg2.connect(**DB_CONFIG)
+        _write_conn_local.conn.autocommit = False
+    return _write_conn_local.conn
 
 
 def init_db():
@@ -1114,7 +1122,6 @@ def _build_metadata_blob(entity_id: int, entity_type: str, entity_data: dict | N
 
 
 def auto_index_request_web(request_id: int, index_summary: bool = True) -> int:
-    count = 0
     try:
         from shared import config as cfg
         cfg.initialise_llm()
@@ -1123,15 +1130,12 @@ def auto_index_request_web(request_id: int, index_summary: bool = True) -> int:
         return 0
 
     entity_type = get_cached_entity_type(request_id) or "Request"
-
     entity_data = get_entity_data(request_id)
     prefix = _build_embedding_prefix(request_id, entity_type, entity_data)
 
-    # Delete existing embeddings so we always write fresh
-    conn = _get_conn()
-    c = conn.cursor()
-    c.execute("DELETE FROM embeddings WHERE request_id = %s", (request_id,))
-    conn.commit()
+    # Collect all texts with metadata
+    batch_texts: list[str] = []
+    batch_meta: list[tuple[str, str, str]] = []  # (chunk_text, chunk_type, entity_type)
 
     comments, _ = get_cached_comments(request_id)
     if comments:
@@ -1139,50 +1143,47 @@ def auto_index_request_web(request_id: int, index_summary: bool = True) -> int:
             text = comment.get("text", "").strip() if isinstance(comment, dict) else ""
             if not text or len(text) < 20:
                 continue
-            try:
-                prefixed = f"{prefix} {text[:5000]}"
-                embedding = LLMClient.generate_embedding(prefixed)
-                if embedding and any(v != 0.0 for v in embedding):
-                    c.execute(
-                        "INSERT INTO embeddings (request_id, chunk_text, embedding, chunk_type, created_at, entity_type) VALUES (%s, %s, %s::vector, %s, %s, %s)",
-                        (request_id, prefixed, json.dumps(embedding), "comment", datetime.now().isoformat(), entity_type),
-                    )
-                    conn.commit()
-                    count += 1
-            except Exception:
-                continue
+            prefixed = f"{prefix} {text[:5000]}"
+            batch_texts.append(prefixed)
+            batch_meta.append((prefixed, "comment", entity_type))
 
     if index_summary:
         summary, _ = get_summary(request_id)
         if summary and summary.strip() and len(summary) >= 20:
-            try:
-                prefixed = f"{prefix} {summary[:5000]}"
-                embedding = LLMClient.generate_embedding(prefixed)
-                if embedding and any(v != 0.0 for v in embedding):
-                    c.execute(
-                        "INSERT INTO embeddings (request_id, chunk_text, embedding, chunk_type, created_at, entity_type) VALUES (%s, %s, %s::vector, %s, %s, %s)",
-                        (request_id, prefixed, json.dumps(embedding), "summary", datetime.now().isoformat(), entity_type),
-                    )
-                    conn.commit()
-                    count += 1
-            except Exception:
-                pass
+            prefixed = f"{prefix} {summary[:5000]}"
+            batch_texts.append(prefixed)
+            batch_meta.append((prefixed, "summary", entity_type))
 
-    # Metadata blob
     blob = _build_metadata_blob(request_id, entity_type, entity_data)
     if blob:
-        try:
-            embedding = LLMClient.generate_embedding(blob[:5000])
-            if embedding and any(v != 0.0 for v in embedding):
+        batch_texts.append(blob[:5000])
+        batch_meta.append((blob[:5000], "metadata", entity_type))
+
+    if not batch_texts:
+        return 0
+
+    embeddings = LLMClient.generate_embeddings_list(batch_texts)
+    if not embeddings:
+        return 0
+
+    conn = _get_write_conn()
+    c = conn.cursor()
+    c.execute("DELETE FROM embeddings WHERE request_id = %s", (request_id,))
+    count = 0
+    now = datetime.now().isoformat()
+    for i, (chunk_text, chunk_type, etype) in enumerate(batch_meta):
+        emb = embeddings[i] if i < len(embeddings) else None
+        if emb and any(v != 0.0 for v in emb):
+            try:
                 c.execute(
                     "INSERT INTO embeddings (request_id, chunk_text, embedding, chunk_type, created_at, entity_type) VALUES (%s, %s, %s::vector, %s, %s, %s)",
-                    (request_id, blob[:5000], json.dumps(embedding), "metadata", datetime.now().isoformat(), entity_type),
+                    (request_id, chunk_text, json.dumps(emb), chunk_type, now, etype),
                 )
-                conn.commit()
                 count += 1
-        except Exception:
-            pass
+            except Exception:
+                continue
 
+    conn.commit()
     return count
 
 

@@ -55,6 +55,10 @@ class BaseLLMProvider(ABC):
     def generate_embedding(self, text: str) -> list[float]:
         pass
 
+    def generate_embeddings_list(self, texts: list[str]) -> list[list[float] | None]:
+        """Batch generate embeddings. Default falls back to sequential."""
+        return [self.generate_embedding(t) for t in texts]
+
     @abstractmethod
     def test_connection(self) -> tuple[bool, str]:
         pass
@@ -186,6 +190,46 @@ class LocalLLMProvider(BaseLLMProvider):
                     data = resp.json()
                     emb = data["embeddings"][0]
                     return normalise_embedding(emb)
+                raise
+
+    def generate_embeddings_list(self, texts: list[str], embedding_model: Optional[str] = None) -> list[list[float] | None]:
+        from .config import EMBEDDING_MODEL as _cfg_embed_model
+        model = embedding_model or _cfg_embed_model or "all-minilm"
+        if not texts:
+            return []
+        if self._is_openai_compat:
+            url = f"{self._base_url}/v1/embeddings"
+            try:
+                resp = requests.post(url, json={"model": model, "input": texts}, timeout=self._timeout)
+                resp.raise_for_status()
+                data = resp.json()
+                results = [None] * len(texts)
+                for item in data.get("data", []):
+                    idx = item.get("index")
+                    if idx is not None and idx < len(texts):
+                        results[idx] = normalise_embedding(item["embedding"])
+                return results
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code == 404:
+                    raise LLMProviderError(
+                        f"Embedding model '{model}' not found on server.", "local")
+                raise
+        else:
+            url = f"{self._base_url}/api/embed"
+            try:
+                resp = requests.post(url, json={"model": model, "input": texts}, timeout=self._timeout)
+                resp.raise_for_status()
+                data = resp.json()
+                raw = data.get("embeddings", [])
+                return [normalise_embedding(e) if e else None for e in raw]
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code == 404:
+                    self._pull_ollama_model(model)
+                    resp = requests.post(url, json={"model": model, "input": texts}, timeout=self._timeout)
+                    resp.raise_for_status()
+                    data = resp.json()
+                    raw = data.get("embeddings", [])
+                    return [normalise_embedding(e) if e else None for e in raw]
                 raise
 
     def generate(self, prompt: str, temperature: float = 0.3, max_tokens: Optional[int] = None, **kwargs) -> str:
@@ -377,6 +421,44 @@ class CloudLLMProvider(BaseLLMProvider):
                 raise LLMProviderError(
                     f"Embedding API error: {e.response.status_code} - {detail}", "cloud")
 
+    def generate_embeddings_list(self, texts: list[str], embedding_model: Optional[str] = None) -> list[list[float] | None]:
+        from .config import EMBEDDING_MODEL as _cfg_embed_model
+        model = embedding_model or _cfg_embed_model
+        if not texts:
+            return []
+        if self._provider_name == "bedrock":
+            return [self.generate_embedding(t, embedding_model) for t in texts]
+        embed_model = model or "text-embedding-3-small"
+        embed_endpoint = self.config.get("embedding_endpoint", "").strip()
+        if not embed_endpoint:
+            base = self._endpoint.rstrip("/")
+            if "/chat/completions" in base:
+                base = base.replace("/chat/completions", "")
+            embed_endpoint = f"{base}/embeddings"
+        payload = {"model": embed_model, "input": texts}
+        try:
+            resp = requests.post(
+                embed_endpoint, headers=self._get_headers(),
+                json=payload, timeout=self._timeout, verify=self._verify,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            results = [None] * len(texts)
+            for item in data.get("data", []):
+                idx = item.get("index")
+                if idx is not None and idx < len(texts):
+                    results[idx] = normalise_embedding(item["embedding"])
+            return results
+        except requests.exceptions.HTTPError as e:
+            detail = ""
+            try:
+                body = e.response.json()
+                detail = body.get("error", {}).get("message", "")
+            except Exception:
+                detail = e.response.text[:200] if e.response.text else ""
+            raise LLMProviderError(
+                f"Embedding batch API error: {e.response.status_code} - {detail}", "cloud")
+
     def generate(self, prompt: str, temperature: float = 0.3, max_tokens: Optional[int] = None, **kwargs) -> str:
         if self._provider_name == "bedrock":
             return self._generate_bedrock(prompt, temperature, max_tokens)
@@ -512,11 +594,11 @@ class LLMClient:
             return cls._provider.get_provider_info()
 
     @classmethod
-    def generate(cls, prompt: str, **kwargs) -> str:
+    def _ensure_provider(cls):
+        """Quick validation under lock — does NOT hold lock during API call."""
         with cls._lock:
             if cls._provider is None:
                 raise LLMProviderError("No provider configured", "unknown")
-
             from .config import _config
             expected_type = _config.get("llm_provider_type", "local")
             if cls._provider.provider_type != expected_type:
@@ -525,36 +607,32 @@ class LLMClient:
                     f"config says '{expected_type}'",
                     cls._provider.provider_type
                 )
+            return cls._provider
 
-            logger.info(f"Generating with provider type: {cls._provider.provider_type}, model: {cls._provider.model}")
-
-            if config.PROMPT_LOGGING_ENABLED:
-                try:
-                    with open(config.PROMPT_LOG_FILE, "a", encoding="utf-8") as f:
-                        f.write(f"\n{'='*60}\n")
-                        f.write(f"[{datetime.now().isoformat()}] PROMPT SENT TO LLM\n")
-                        f.write(f"{'='*60}\n")
-                        f.write(prompt)
-                        f.write(f"\n{'='*60}\n\n")
-                except Exception:
-                    logger.exception("Failed to write prompt log")
-
-            return cls._provider.generate(prompt, **kwargs)
+    @classmethod
+    def generate(cls, prompt: str, **kwargs) -> str:
+        provider = cls._ensure_provider()
+        if config.PROMPT_LOGGING_ENABLED:
+            try:
+                with open(config.PROMPT_LOG_FILE, "a", encoding="utf-8") as f:
+                    f.write(f"\n{'='*60}\n")
+                    f.write(f"[{datetime.now().isoformat()}] PROMPT SENT TO LLM\n")
+                    f.write(f"{'='*60}\n")
+                    f.write(prompt)
+                    f.write(f"\n{'='*60}\n\n")
+            except Exception:
+                logger.exception("Failed to write prompt log")
+        return provider.generate(prompt, **kwargs)
 
     @classmethod
     def generate_embedding(cls, text: str, embedding_model: Optional[str] = None) -> list[float]:
-        with cls._lock:
-            if cls._provider is None:
-                raise LLMProviderError("No provider configured", "unknown")
-            from .config import _config
-            expected_type = _config.get("llm_provider_type", "local")
-            if cls._provider.provider_type != expected_type:
-                raise LLMProviderError(
-                    f"Provider type mismatch: active is '{cls._provider.provider_type}', "
-                    f"config says '{expected_type}'",
-                    cls._provider.provider_type
-                )
-            return cls._provider.generate_embedding(text, embedding_model)
+        provider = cls._ensure_provider()
+        return provider.generate_embedding(text, embedding_model)
+
+    @classmethod
+    def generate_embeddings_list(cls, texts: list[str], embedding_model: Optional[str] = None) -> list[list[float] | None]:
+        provider = cls._ensure_provider()
+        return provider.generate_embeddings_list(texts, embedding_model)
 
     @classmethod
     def test_connection(cls) -> tuple[bool, str]:

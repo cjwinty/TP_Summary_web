@@ -72,7 +72,7 @@ def _ensure_chunk_type_column():
 def get_embedding(text: str) -> list[float]:
     try:
         cfg.initialise_llm()
-        from llm_providers import LLMClient
+        from shared.llm_providers import LLMClient
         return LLMClient.generate_embedding(text)
     except Exception as e:
         logger.error(f"Embedding generation failed: {e}")
@@ -148,99 +148,55 @@ async def index_comments(req: IndexRequest):
 
 
 def _reindex_work(mode: str, ids: list[int]):
-    """Run reindex work in a background thread. Updates _reindex_state for progress."""
+    """Run reindex work in a background thread with parallel workers."""
     global _reindex_state
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import threading
     import psycopg2
     from database import DB_CONFIG
-    from database import _build_embedding_prefix, _build_metadata_blob, get_entity_data
-    conn = psycopg2.connect(**DB_CONFIG)
-    conn.autocommit = False
-    c = conn.cursor()
+
     _ensure_chunk_type_column()
-    total = 0
     n = len(ids)
+    _reindex_state["total"] = n
 
     if mode == "full":
-        c.execute("TRUNCATE embeddings")
-        conn.commit()
+        tconn = psycopg2.connect(**DB_CONFIG)
+        tconn.autocommit = False
+        tc = tconn.cursor()
+        tc.execute("TRUNCATE embeddings")
+        tconn.commit()
+        tconn.close()
 
-    for i, rid in enumerate(ids):
-        if _reindex_state["stop"]:
-            _reindex_state["message"] = "Stopped by user."
-            break
+    lock = threading.Lock()
+    total_chunks = [0]
+    done_count = [0]
 
-        _reindex_state["current"] = i + 1
-        _reindex_state["message"] = f"Processing request #{rid} ({i + 1}/{n})"
+    def worker(rid):
+        try:
+            from database import auto_index_request_web
+            chunks = auto_index_request_web(rid)
+            with lock:
+                total_chunks[0] += chunks
+                done_count[0] += 1
+                _reindex_state["current"] = done_count[0]
+        except Exception:
+            with lock:
+                done_count[0] += 1
+                _reindex_state["current"] = done_count[0]
 
-        entity_type = "Request"
-        entity_data = get_entity_data(rid)
-        # fallback: guess type from comments table if entity_data missing
-        if not entity_data:
-            from database import get_cached_comments as _gcc
-            c2 = conn.cursor()
-            c2.execute("SELECT entity_type FROM comments WHERE request_id = %s", (rid,))
-            row = c2.fetchone()
-            if row:
-                entity_type = row[0]
-        else:
-            entity_type = entity_data.get("entity_type") or "Request"
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        fut_map = {executor.submit(worker, rid): rid for rid in ids}
+        for fut in as_completed(fut_map):
+            if _reindex_state["stop"]:
+                executor.shutdown(wait=False)
+                _reindex_state["message"] = f"Stopped by user after {done_count[0]}/{n} entities."
+                break
+            _reindex_state["message"] = f"Reindexed {done_count[0]}/{n} entities ({total_chunks[0]} chunks)"
 
-        prefix = _build_embedding_prefix(rid, entity_type, entity_data)
-
-        comments, fetched_at = get_cached_comments(rid)
-        if comments:
-            for comment in comments:
-                if _reindex_state["stop"]:
-                    break
-                text = comment.get("text", "").strip()
-                if not text or len(text) < 20:
-                    continue
-                prefixed = f"{prefix} {text[:5000]}"
-                embedding = get_embedding(prefixed)
-                if embedding and any(v != 0.0 for v in embedding):
-                    try:
-                        c.execute(
-                            "INSERT INTO embeddings (request_id, chunk_text, embedding, chunk_type, created_at, entity_type) VALUES (%s, %s, %s::vector, %s, %s, %s)",
-                            (rid, prefixed, json.dumps(embedding), "comment", datetime.now().isoformat(), entity_type),
-                        )
-                        total += 1
-                    except Exception:
-                        continue
-        if _reindex_state["stop"]:
-            _reindex_state["message"] = "Stopped by user."
-            break
-        summary, _ = get_summary(rid)
-        if summary and summary.strip() and len(summary) >= 20:
-            prefixed = f"{prefix} {summary[:5000]}"
-            embedding = get_embedding(prefixed)
-            if embedding and any(v != 0.0 for v in embedding):
-                try:
-                    c.execute(
-                        "INSERT INTO embeddings (request_id, chunk_text, embedding, chunk_type, created_at, entity_type) VALUES (%s, %s, %s::vector, %s, %s, %s)",
-                        (rid, prefixed, json.dumps(embedding), "summary", datetime.now().isoformat(), entity_type),
-                    )
-                    total += 1
-                except Exception:
-                    continue
-        # Metadata blob
-        blob = _build_metadata_blob(rid, entity_type, entity_data)
-        if blob:
-            embedding = get_embedding(blob[:5000])
-            if embedding and any(v != 0.0 for v in embedding):
-                try:
-                    c.execute(
-                        "INSERT INTO embeddings (request_id, chunk_text, embedding, chunk_type, created_at, entity_type) VALUES (%s, %s, %s::vector, %s, %s, %s)",
-                        (rid, blob[:5000], json.dumps(embedding), "metadata", datetime.now().isoformat(), entity_type),
-                    )
-                    total += 1
-                except Exception:
-                    continue
-        conn.commit()
-
-    label = "Reindexed" if mode == "full" else "Indexed"
     _reindex_state["running"] = False
     if not _reindex_state["stop"]:
-        _reindex_state["message"] = f"{label} {total} chunks across {n} requests."
+        label = "Reindexed" if mode == "full" else "Indexed"
+        _reindex_state["message"] = f"{label} {total_chunks[0]} chunks across {done_count[0]} requests."
 
 
 async def _reindex_sse(mode: str):
@@ -473,7 +429,7 @@ async def ask_rag(req: AskRequest):
 
     try:
         cfg.initialise_llm()
-        from llm_providers import LLMClient
+        from shared.llm_providers import LLMClient
         answer = LLMClient.generate(prompt, temperature=0.3)
         return JSONResponse({
             "answer": answer,

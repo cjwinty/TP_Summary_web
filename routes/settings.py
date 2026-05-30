@@ -204,25 +204,59 @@ _backfill_state = {
     "total": 0,
     "message": "",
     "error": None,
+    "phase": "",
+    "phase_message": "",
 }
 
 
 def _backfill_work(ids: list[int]):
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     global _backfill_state
-    count = 0
-    for rid in ids:
-        if _backfill_state["stop"]:
-            _backfill_state["message"] = f"Stopped after {count} entities."
-            break
-        try:
-            refresh_entity_metadata(rid)
-            count += 1
-        except Exception:
-            pass
-        _backfill_state["current"] = count
+    total = len(ids)
+    _backfill_state["phase"] = "metadata"
+    _backfill_state["current"] = 0
+    _backfill_state["total"] = total
+    _backfill_state["phase_message"] = f"Phase 1/2: Backfilling metadata for {total} entities..."
+
+    successful_ids = []
+
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        fut_map = {executor.submit(refresh_entity_metadata, eid): eid for eid in ids}
+        for fut in as_completed(fut_map):
+            if _backfill_state["stop"]:
+                _backfill_state["running"] = False
+                _backfill_state["message"] = f"Stopped after {_backfill_state['current']} entities (metadata phase)."
+                return
+            eid = fut_map[fut]
+            try:
+                fut.result()
+                successful_ids.append(eid)
+            except Exception:
+                pass
+            _backfill_state["current"] += 1
+
+    emb_total = len(successful_ids)
+    _backfill_state["phase"] = "embeddings"
+    _backfill_state["current"] = 0
+    _backfill_state["total"] = emb_total
+    _backfill_state["phase_message"] = f"Phase 2/2: Generating embeddings for {emb_total} entities..."
+
+    from database import auto_index_request_web
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        fut_map = {executor.submit(auto_index_request_web, eid): eid for eid in successful_ids}
+        for fut in as_completed(fut_map):
+            if _backfill_state["stop"]:
+                _backfill_state["running"] = False
+                _backfill_state["message"] = f"Stopped after {_backfill_state['current']}/{emb_total} (embedding phase)."
+                return
+            try:
+                fut.result()
+            except Exception:
+                pass
+            _backfill_state["current"] += 1
+
     _backfill_state["running"] = False
-    if not _backfill_state["stop"]:
-        _backfill_state["message"] = f"Backfilled metadata for {count} entities."
+    _backfill_state["message"] = f"Done. Backfilled metadata + embeddings for {emb_total} entities."
 
 
 async def _backfill_sse():
@@ -233,6 +267,8 @@ async def _backfill_sse():
     _backfill_state["total"] = 0
     _backfill_state["message"] = ""
     _backfill_state["error"] = None
+    _backfill_state["phase"] = ""
+    _backfill_state["phase_message"] = ""
 
     conn = get_conn()
     c = conn.cursor()
@@ -251,7 +287,7 @@ async def _backfill_sse():
         yield f"data: {json.dumps({'type': 'done', 'message': 'All cached entities already have metadata.'})}\n\n"
         return
 
-    yield f"data: {json.dumps({'type': 'status', 'message': f'Backfilling metadata for {len(ids)} entities...'})}\n\n"
+    yield f"data: {json.dumps({'type': 'status', 'message': f'Phase 1/2: Backfilling metadata for {len(ids)} entities...'})}\n\n"
 
     thread = threading.Thread(target=_backfill_work, args=(ids,), daemon=True)
     thread.start()
@@ -261,10 +297,16 @@ async def _backfill_sse():
         if _backfill_state["error"]:
             yield f"data: {json.dumps({'type': 'error', 'message': _backfill_state['error']})}\n\n"
             return
+        phase_msg = _backfill_state.get("phase_message", "")
+        if phase_msg:
+            yield f"data: {json.dumps({'type': 'status', 'message': phase_msg})}\n\n"
+            _backfill_state["phase_message"] = ""
         cur = _backfill_state["current"]
+        total = _backfill_state["total"]
+        phase = _backfill_state.get("phase", "metadata")
         if cur != last:
-            pct = int(cur / _backfill_state["total"] * 100) if _backfill_state["total"] > 0 else 0
-            yield f"data: {json.dumps({'type': 'progress', 'percent': pct, 'count': cur, 'total': _backfill_state['total']})}\n\n"
+            pct = int(cur / total * 100) if total > 0 else 0
+            yield f"data: {json.dumps({'type': 'progress', 'phase': phase, 'percent': pct, 'count': cur, 'total': total})}\n\n"
             last = cur
         import asyncio
         await asyncio.sleep(0.5)
