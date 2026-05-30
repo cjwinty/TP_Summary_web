@@ -10,6 +10,7 @@ from database import (
     save_chat_message,
     get_chat_history,
     get_conn,
+    get_distinct_filter_options,
 )
 
 from shared import config as cfg
@@ -22,6 +23,15 @@ class ChatSendRequest(BaseModel):
     session_id: str
     message: str
     client: Optional[str] = None
+    product: Optional[str] = None
+    project: Optional[str] = None
+    entity_type: Optional[str] = None
+    entity_state: Optional[str] = None
+
+
+@router.get("/chat/filter-options")
+async def chat_filter_options():
+    return JSONResponse(get_distinct_filter_options())
 
 
 @router.get("/chat", response_class=HTMLResponse)
@@ -36,7 +46,7 @@ async def chat_page(request: Request):
 
 def _format_grouped_context(rows: list, top_k: int) -> tuple[str, list]:
     """Group embedding rows by request_id, enrich with entity_data + relations, return (context_str, sources)."""
-    from database import get_entity_data as _get_ed, get_relations as _get_rel
+    from database import get_entity_data as _get_ed, get_relations as _get_rel, _build_metadata_blob
 
     chunks_by_id: dict[int, list] = {}
     for row in rows:
@@ -59,18 +69,7 @@ def _format_grouped_context(rows: list, top_k: int) -> tuple[str, list]:
         if ed:
             et = ed.get("entity_type") or chunks[0]["entity_type"]
             state = ed.get("entity_state", "")
-            client = ed.get("client", "")
-            product = ed.get("product", "")
-            meta_line = f"[{et} #{rid}]"
-            details = []
-            if state:
-                details.append(f"State: {state}")
-            if client:
-                details.append(f"Client: {client}")
-            if product:
-                details.append(f"Product: {product}")
-            if details:
-                meta_line += " | " + " | ".join(details)
+            profile = _build_metadata_blob(rid, et, ed)
 
             rels = _get_rel(rid)
             if rels:
@@ -79,9 +78,12 @@ def _format_grouped_context(rows: list, top_k: int) -> tuple[str, list]:
                     rt = rel.get("related_entity_type") or "?"
                     rn = rel.get("related_entity_name") or str(rel.get("related_entity_id", ""))
                     rel_texts.append(f"{rt} #{rn}")
-                meta_line += " | Related: " + ", ".join(rel_texts)
+                if profile:
+                    profile += " | Related: " + ", ".join(rel_texts)
+                else:
+                    profile = f"[{et} #{rid}] | Related: " + ", ".join(rel_texts)
 
-            context_parts.append(meta_line)
+            context_parts.append(profile or f"[{et} #{rid}]")
             sources.append({"id": rid, "type": et, "state": state})
         else:
             et = chunks[0]["entity_type"]
@@ -120,15 +122,30 @@ async def chat_send(req: ChatSendRequest):
     sources = []
     top_k = 10
 
+    filter_map = {
+        "client": "ed.client",
+        "product": "ed.product",
+        "project": "ed.project_name",
+        "entity_type": "ed.entity_type",
+        "entity_state": "ed.entity_state",
+    }
+    filter_clauses = []
+    filter_params = []
+    for field, db_col in filter_map.items():
+        val = getattr(req, field, None)
+        if val:
+            filter_clauses.append(f"{db_col} = %s")
+            filter_params.append(val)
+
     if has_embeddings and query_embedding and any(v != 0.0 for v in query_embedding):
-        if req.client:
+        if filter_clauses:
             c.execute(
                 "SELECT e.request_id, e.chunk_text, e.entity_type, e.chunk_type, e.embedding <=> %s::vector AS distance "
                 "FROM embeddings e "
                 "INNER JOIN entity_data ed ON e.request_id = ed.entity_id "
-                "WHERE ed.client ILIKE %s "
+                "WHERE " + " AND ".join(filter_clauses) + " "
                 "ORDER BY distance LIMIT %s",
-                (json.dumps(query_embedding), f"%{req.client}%", top_k),
+                (json.dumps(query_embedding), *filter_params, top_k),
             )
         else:
             c.execute(
@@ -138,10 +155,29 @@ async def chat_send(req: ChatSendRequest):
             )
         context, sources = _format_grouped_context(c.fetchall(), 5)
     else:
-        from database import search_and_fetch_full
-        kw_results = search_and_fetch_full(req.message, limit=5)
+        from database import search_and_fetch_full, get_entity_data as _get_ed
+        kw_results = search_and_fetch_full(req.message, limit=25)
+        if filter_clauses:
+            filtered = []
+            for r in kw_results:
+                ed = _get_ed(r["request_id"])
+                if not ed:
+                    continue
+                if all(
+                    (ed.get(col) or "") == val
+                    for col, val in [
+                        ("client", req.client),
+                        ("product", req.product),
+                        ("project_name", req.project),
+                        ("entity_type", req.entity_type),
+                        ("entity_state", req.entity_state),
+                    ]
+                    if val
+                ):
+                    filtered.append(r)
+            kw_results = filtered
         kw_rows = []
-        for r in kw_results:
+        for r in kw_results[:5]:
             kw_rows.append((
                 r["request_id"],
                 " ".join(cm.get("text", "") for cm in (r.get("comments") or []))[:1000],
@@ -158,8 +194,8 @@ async def chat_send(req: ChatSendRequest):
         history_text += f"{role}: {h['content']}\n"
 
     prompt = (
-        "You are a support knowledge base assistant. Each ticket shows its metadata "
-        "(state, client, product, custom fields) followed by relevant comments. "
+        "You are a support knowledge base assistant. Each ticket shows its full ticket profile "
+        "(state, project, client, product, version, custom fields, description) followed by relevant comments. "
         "Use this as evidence for your answer. If the available information is "
         "insufficient, say what you know and what's missing.\n\n"
     )

@@ -23,6 +23,7 @@ The application helps users analyse support tickets by retrieving structured inf
 ### 2. Entity Metadata (TP v1 API → `entity_data` table)
 - Fetched via v1 XML API using `V2_TO_V1_ENDPOINT` mapping (Request→requests, Bug→bugs, etc.).
 - Parsed with `xml.etree.ElementTree` (namespace-agnostic).
+- Uses `include=[id,EntityState,Description,CreateDate,Project,CustomFields]` — `CustomFields` was previously omitted, causing all custom field columns to remain empty across all entities. Fixed by adding it to the `include` parameter.
 - Extracts: `entity_state`, `description`, `create_date`, `project_id`, `project_name`, custom fields.
 - **9 custom field columns**: `customer_ref`, `internal_priority`, `support_level`, `next_action`, `paid_work`, `downtime`, `out_of_hours`, `customer_chased_date`, `stop_feedback_request`.
 - Unsupported entity types (Period, Timesheet) are skipped before any API call — logged at DEBUG level.
@@ -39,7 +40,7 @@ The application helps users analyse support tickets by retrieving structured inf
 
 | Use Case | Data Sources | Method |
 |----------|-------------|--------|
-| **RAG / Chatbot** | Comments + Summaries + Entity Data + Relations | Vector search against `embeddings` (pgvector `<=>` cosine distance, HNSW index), results grouped by entity, enriched with full `entity_data` + `entity_relations` from DB. Every chunk carries a metadata prefix (state, client, product). A standalone metadata blob per entity makes the holistic ticket profile searchable. Client filter joins `entity_data` (not deprecated `request_custom_fields`). |
+| **RAG / Chatbot** | Comments + Summaries + Entity Data + Relations | Vector search against `embeddings` (pgvector `<=>` cosine distance, HNSW index), results grouped by entity, enriched with full `entity_data` (entire metadata blob including description, project, all custom fields, site) + `entity_relations` from DB. Every chunk carries a metadata prefix (state, client, product). A standalone metadata blob per entity makes the holistic ticket profile searchable. Client filter joins `entity_data` (not deprecated `request_custom_fields`). |
 | **Summarisation** | Comments + existing summary | All text concatenated into one block; entity type + ID injected in the prompt header |
 | **Browse** | `entity_data` + `entity_relations` | Direct SQL queries, rendered in Alpine.js-driven Jinja2 templates |
 | **Search** | Comments + custom fields | Text search across comment data with optional custom field and date filters |
@@ -53,6 +54,23 @@ Every embedding chunk (all three `chunk_type` values: `comment`, `summary`, `met
 ```
 
 A standalone **metadata blob** (`chunk_type='metadata'`) is created per entity containing the full ticket profile: state, project, client, product, version, all custom fields, description (truncated to 2k chars), and relations. This makes the holistic ticket profile semantically searchable — users can find tickets by description content, custom field values, or relationship patterns.
+
+## Chatbot Scoping
+
+The chatbot supports scoping the RAG knowledge base by five filter dimensions, all sourced from `entity_data`:
+- **Client** (`entity_data.client`)
+- **Product** (`entity_data.product`)
+- **Project** (`entity_data.project_name`)
+- **Entity Type** (`entity_data.entity_type`)
+- **Entity State** (`entity_data.entity_state`)
+
+These filters narrow the vector search and/or keyword fallback to only consider entities matching the selected dimension values. This prevents answer bleed across unrelated products, projects, or states.
+
+Each dimension is **single-select** — one value at a time. Leaving all dimensions blank means no scoping (search across all cached entities).
+
+Matching is **exact equality** (`=`) rather than partial ILIKE, since dropdown values are known exact strings. NULL/empty values are excluded from dropdown options. Filters combine via **AND** logic — each additional filter narrows the result set. Filters apply to both the vector search path (via `INNER JOIN entity_data` + WHERE clause) and the keyword fallback path (post-filtered via `entity_data` lookup).
+
+Dropdown options are populated from a dedicated `GET /chat/filter-options` endpoint that queries `SELECT DISTINCT ... FROM entity_data` for each of the five columns, excluding NULL/empty values.
 
 ## Key Variables (Prompt Injection)
 
@@ -72,7 +90,7 @@ Prompts receive these variables automatically:
 | Operation | Pattern | Behaviour |
 |-----------|---------|-----------|
 | **Smart cache range** | SSE + bg thread pool | Two-phase parallel (20/8 workers): Phase 1 fetches comments + metadata for missing and stale entities, Phase 2 generates embeddings. Reports phase transitions, skipped, and metadata_only counts. |
-| **Force cache range** | SSE + bg thread pool | Two-phase parallel (20/8 workers): Phase 1 re-fetches all comments + metadata, compares old vs new data (JSON diff), tracks changed vs unchanged. Phase 2 regenerates embeddings only for changed entities. Unchanged entities preserve existing embeddings. |
+| **Force cache range** | SSE + bg thread pool | Two-phase parallel (20/8 workers): Phase 1 re-fetches all comments + metadata for **every ID in the range** (not just un-cached ones — force mode was skipping existing entities, fixed), compares old vs new data (JSON diff), tracks changed vs unchanged. Phase 2 regenerates embeddings only for changed entities. Unchanged entities preserve existing embeddings. |
 | **Entity Metadata Backfill** | SSE + bg thread pool | Two-phase parallel (20 workers): Phase 1 fetches metadata + relations, Phase 2 generates embeddings. SSE reports phase transitions. |
 | **Project Name Backfill** | SSE (inline) | Single API call for all projects; updates all NULL `project_name` rows |
 | **Reindex (missing)** | SSE + bg thread pool | Generates embeddings only for entities that lack them; 8-worker parallel batch system |
@@ -88,6 +106,6 @@ The `embeddings` table uses an **HNSW (Hierarchical Navigable Small World)** ind
 
 ## Deprecated Tables
 
-`request_custom_fields` is a dead data source — no new rows written since SQLite migration. All queries (client filter, search) now use `entity_data` instead. The table and its indexes are preserved for backward compatibility but not queried by any route.
+`request_custom_fields` is a dead data source — no new rows written since SQLite migration. All queries (client filter, search) use `entity_data` instead. The sole remaining query against this table (`search_cached_issues_by_product_keyword`) was migrated to `entity_data`. The table and its indexes are preserved for backward compatibility but not queried by any route.
 
 All long-running operations use SSE streaming with a progress bar. The same pattern is reused across reindex, backfills, and cache range. The settings page checks all four status endpoints (`/rag/reindex-status`, `/settings/backfill-status`, `/settings/cache-range-status`, `/settings/backfill-project-names-status`) on page load via Alpine.js `init()` — if any operation is still running server-side, the UI re-enters running state and polls every 2s until completion. This ensures running jobs survive navigation away and back.

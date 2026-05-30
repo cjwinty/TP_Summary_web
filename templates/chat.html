@@ -5,10 +5,49 @@
     <h2>TP Query Chatbot</h2>
 
     <div class="chat-controls">
-        <label>
-            Company (optional):
-            <input type="text" id="client-field" x-model="client" placeholder="e.g. Acme Corp">
-        </label>
+        <div class="filters-row">
+            <label>Client:
+                <select x-model="filters.client" class="input">
+                    <option value="">All</option>
+                    <template x-for="opt in filterOptions.clients" :key="opt">
+                        <option x-text="opt" :value="opt"></option>
+                    </template>
+                </select>
+            </label>
+            <label>Product:
+                <select x-model="filters.product" class="input">
+                    <option value="">All</option>
+                    <template x-for="opt in filterOptions.products" :key="opt">
+                        <option x-text="opt" :value="opt"></option>
+                    </template>
+                </select>
+            </label>
+            <label>Project:
+                <select x-model="filters.project" class="input">
+                    <option value="">All</option>
+                    <template x-for="opt in filterOptions.projects" :key="opt">
+                        <option x-text="opt" :value="opt"></option>
+                    </template>
+                </select>
+            </label>
+            <label>Type:
+                <select x-model="filters.entity_type" class="input">
+                    <option value="">All</option>
+                    <template x-for="opt in filterOptions.types" :key="opt">
+                        <option x-text="opt" :value="opt"></option>
+                    </template>
+                </select>
+            </label>
+            <label>State:
+                <select x-model="filters.entity_state" class="input">
+                    <option value="">All</option>
+                    <template x-for="opt in filterOptions.states" :key="opt">
+                        <option x-text="opt" :value="opt"></option>
+                    </template>
+                </select>
+            </label>
+        </div>
+        <button @click="resetFilters()" class="btn btn-secondary" style="white-space:nowrap">Reset Filters</button>
         <button @click="clearChat()" class="btn btn-secondary">Clear</button>
     </div>
 
@@ -36,9 +75,10 @@
 
 <style>
 .chat-container { max-width: 800px; margin: 0 auto; padding: 16px; display: flex; flex-direction: column; height: calc(100vh - 80px); }
-.chat-controls { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
-.chat-controls label { font-size: 13px; color: #888; }
-.chat-controls input { margin-left: 6px; padding: 4px 8px; border: 1px solid #444; border-radius: 4px; background: #2a2a2a; color: #ddd; }
+.chat-controls { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+.filters-row { display: flex; gap: 6px; flex-wrap: wrap; flex: 1; }
+.filters-row label { font-size: 12px; color: #888; display: flex; align-items: center; gap: 4px; }
+.filters-row select { padding: 3px 6px; font-size: 12px; max-width: 130px; }
 .chat-messages { flex: 1; overflow-y: auto; padding: 12px; background: #1e1e1e; border-radius: 8px; margin-bottom: 12px; }
 .chat-msg { margin-bottom: 12px; padding: 8px 12px; border-radius: 8px; max-width: 85%; }
 .chat-msg-user { background: #2b5278; margin-left: auto; }
@@ -58,12 +98,17 @@
 function chatBot() {
     return {
         sessionId: '',
-        client: '',
+        filters: { client: '', product: '', project: '', entity_type: '', entity_state: '' },
+        filterOptions: { clients: [], products: [], projects: [], types: [], states: [] },
         input: '',
         loading: false,
         messages: [],
         init(sid) {
             this.sessionId = sid;
+            fetch('/chat/filter-options')
+                .then(r => r.json())
+                .then(data => { this.filterOptions = data; })
+                .catch(() => {});
         },
         async sendMessage() {
             const text = this.input.trim();
@@ -75,7 +120,7 @@ function chatBot() {
                 const resp = await fetch('/chat/send', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ session_id: this.sessionId, message: text, client: this.client || null }),
+                    body: JSON.stringify({ session_id: this.sessionId, message: text, ...this.filters }),
                 });
                 const data = await resp.json();
                 if (data.reply) {
@@ -92,10 +137,13 @@ function chatBot() {
                 if (el) el.scrollTop = el.scrollHeight;
             });
         },
+        resetFilters() {
+            this.filters = { client: '', product: '', project: '', entity_type: '', entity_state: '' };
+        },
         clearChat() {
             this.messages = [];
             this.sessionId = crypto.randomUUID();
-            this.client = '';
+            this.resetFilters();
         },
     };
 }

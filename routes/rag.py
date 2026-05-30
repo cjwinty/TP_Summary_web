@@ -42,6 +42,10 @@ class AskRequest(BaseModel):
     query: str
     top_k: int = 5
     client: Optional[str] = None
+    product: Optional[str] = None
+    project: Optional[str] = None
+    entity_type: Optional[str] = None
+    entity_state: Optional[str] = None
 
 
 class FindFixesRequest(BaseModel):
@@ -317,27 +321,39 @@ async def ask_rag(req: AskRequest):
 
     sources = []
 
+    filter_map = {
+        "client": "ed.client",
+        "product": "ed.product",
+        "project": "ed.project_name",
+        "entity_type": "ed.entity_type",
+        "entity_state": "ed.entity_state",
+    }
+    filter_clauses = []
+    filter_params = []
+    for field, db_col in filter_map.items():
+        val = getattr(req, field, None)
+        if val:
+            filter_clauses.append(f"{db_col} = %s")
+            filter_params.append(val)
+
     if has_embeddings:
         query_embedding = get_embedding(req.query)
         if not query_embedding or all(v == 0.0 for v in query_embedding):
             return JSONResponse({"error": "Failed to generate query embedding."}, status_code=500)
 
-        if req.client:
+        if filter_clauses:
             c.execute(
                 "SELECT e.request_id, e.chunk_text, e.entity_type, e.chunk_type, e.embedding <=> %s::vector AS distance "
                 "FROM embeddings e "
                 "INNER JOIN entity_data ed ON e.request_id = ed.entity_id "
-                "WHERE ed.client ILIKE %s "
-                "ORDER BY distance "
-                "LIMIT %s",
-                (json.dumps(query_embedding), f"%{req.client}%", req.top_k * 2),
+                "WHERE " + " AND ".join(filter_clauses) + " "
+                "ORDER BY distance LIMIT %s",
+                (json.dumps(query_embedding), *filter_params, req.top_k * 2),
             )
         else:
             c.execute(
                 "SELECT e.request_id, e.chunk_text, e.entity_type, e.chunk_type, e.embedding <=> %s::vector AS distance "
-                "FROM embeddings e "
-                "ORDER BY distance "
-                "LIMIT %s",
+                "FROM embeddings e ORDER BY distance LIMIT %s",
                 (json.dumps(query_embedding), req.top_k * 2),
             )
 
@@ -355,25 +371,14 @@ async def ask_rag(req: AskRequest):
                 "distance": float(row[4]),
             })
 
-        from database import get_entity_data as _get_ed, get_relations as _get_rel
+        from database import get_entity_data as _get_ed, get_relations as _get_rel, _build_metadata_blob
         context_parts = []
         for rid, chunks in list(chunks_by_id.items())[:req.top_k]:
             ed = _get_ed(rid)
             if ed:
                 et = ed.get("entity_type") or chunks[0]["entity_type"]
                 state = ed.get("entity_state") or ""
-                client = ed.get("client") or ""
-                product = ed.get("product") or ""
-                meta_line = f"[{et} #{rid}]"
-                details = []
-                if state:
-                    details.append(f"State: {state}")
-                if client:
-                    details.append(f"Client: {client}")
-                if product:
-                    details.append(f"Product: {product}")
-                if details:
-                    meta_line += " | " + " | ".join(details)
+                profile = _build_metadata_blob(rid, et, ed)
 
                 rels = _get_rel(rid)
                 if rels:
@@ -382,9 +387,12 @@ async def ask_rag(req: AskRequest):
                         rt = rel.get("related_entity_type") or "?"
                         rn = rel.get("related_entity_name") or rel.get("related_entity_id") or ""
                         rel_texts.append(f"{rt} #{rn}")
-                    meta_line += " | Related: " + ", ".join(rel_texts)
+                    if profile:
+                        profile += " | Related: " + ", ".join(rel_texts)
+                    else:
+                        profile = f"[{et} #{rid}] | Related: " + ", ".join(rel_texts)
 
-                context_parts.append(meta_line)
+                context_parts.append(profile or f"[{et} #{rid}]")
                 sources.append({"id": rid, "type": et, "state": state})
             else:
                 et = chunks[0]["entity_type"]
@@ -402,10 +410,29 @@ async def ask_rag(req: AskRequest):
 
         context = "\n".join(context_parts)
     else:
-        from database import search_and_fetch_full
-        kw_results = search_and_fetch_full(req.query, limit=5)
+        from database import search_and_fetch_full, get_entity_data as _get_ed
+        kw_results = search_and_fetch_full(req.query, limit=25)
+        if filter_clauses:
+            filtered = []
+            for r in kw_results:
+                ed = _get_ed(r["request_id"])
+                if not ed:
+                    continue
+                if all(
+                    (ed.get(col) or "") == val
+                    for col, val in [
+                        ("client", req.client),
+                        ("product", req.product),
+                        ("project_name", req.project),
+                        ("entity_type", req.entity_type),
+                        ("entity_state", req.entity_state),
+                    ]
+                    if val
+                ):
+                    filtered.append(r)
+            kw_results = filtered
         context_parts = []
-        for r in kw_results:
+        for r in kw_results[:req.top_k]:
             et = r.get('entity_type', 'Request')
             context_parts.append(f"[{et} #{r['request_id']}]")
             sources.append({"id": r["request_id"], "type": et, "state": ""})
@@ -418,8 +445,8 @@ async def ask_rag(req: AskRequest):
         context = "\n".join(context_parts)
 
     prompt = (
-        "You are a support ticket knowledge base. Each ticket shows its metadata "
-        "(state, client, product) followed by relevant comments. Use this as evidence "
+        "You are a support ticket knowledge base. Each ticket shows its full ticket profile "
+        "(state, project, client, product, version, custom fields, description) followed by relevant comments. Use this as evidence "
         "for your answer. If the available information is insufficient, say what you "
         "know and what's missing.\n\n"
         f"Context:\n{context}\n\n"

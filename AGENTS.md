@@ -148,7 +148,8 @@ All routes are defined under their respective router in `routes/`. The `main.py`
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/chat` | Chatbot page |
-| POST | `/chat/send` | RAG Q&A endpoint (stateful, 6-turn context, company filter). Groups results by entity, enriches with entity_data + relations. Returns structured sources `{id, type, state}`. |
+| GET | `/chat/filter-options` | Distinct dropdown options for all 5 chatbot filter dimensions (client, product, project, type, state) |
+| POST | `/chat/send` | RAG Q&A endpoint (stateful, 6-turn context, 5-dimension scoping filters). Groups results by entity, enriches with entity_data + relations. Returns structured sources `{id, type, state}`. Filters apply via AND logic with exact match on vector search (INNER JOIN entity_data + WHERE) and keyword fallback (entity_data post-filter). |
 
 ### RAG (`/rag`)
 | Method | Path | Description |
@@ -157,7 +158,7 @@ All routes are defined under their respective router in `routes/`. The `main.py`
 | POST | `/rag/reindex-all` | SSE: regenerate all embeddings |
 | GET | `/rag/reindex-status` | Reindex progress |
 | POST | `/rag/reindex-stop` | Stop reindex |
-| POST | `/rag/ask` | RAG Q&A (grouped-by-entity context, client filter) |
+| POST | `/rag/ask` | RAG Q&A (grouped-by-entity context, 5-dimension scoping filters) |
 | POST | `/rag/search` | Vector search returning raw embedding matches |
 | POST | `/rag/index` | Index a single entity's comments + summary + metadata blob |
 | POST | `/rag/find-fixes` | Find similar resolved tickets and synthesise fix instructions |

@@ -475,6 +475,28 @@ def get_cached_projects():
         return [{"project_id": r[0], "project_name": r[1] or f"Project {r[0]}"} for r in c.fetchall()]
 
 
+def get_distinct_filter_options():
+    """Return distinct values for all chatbot filter dimensions."""
+    with _lock:
+        conn = _get_conn()
+        c = conn.cursor()
+        queries = {
+            "clients": "client",
+            "products": "product",
+            "projects": "project_name",
+            "types": "entity_type",
+            "states": "entity_state",
+        }
+        result = {}
+        for key, col in queries.items():
+            c.execute(
+                f"SELECT DISTINCT {col} FROM entity_data "
+                f"WHERE {col} IS NOT NULL AND {col} != '' ORDER BY {col}"
+            )
+            result[key] = [r[0] for r in c.fetchall()]
+        return result
+
+
 def get_entity_types_for_project(project_id: int):
     """Return distinct entity_types cached for a given project."""
     with _lock:
@@ -1110,6 +1132,9 @@ def _build_metadata_blob(entity_id: int, entity_type: str, entity_data: dict | N
     version = entity_data.get("release_version") or ""
     if version:
         parts.append(f"Version: {version}")
+    site = entity_data.get("site") or ""
+    if site:
+        parts.append(f"Site: {site}")
     cf = entity_data.get("custom_fields") or {}
     skip_keys = {"Client", "client", "Product", "product", "Release Version", "release_version", "Site", "site"}
     for key, val in cf.items():
@@ -1209,15 +1234,15 @@ def search_cached_issues_by_product_keyword(product: str | None, keywords: list[
         where_clause = ' OR '.join(like_clauses)
 
         if product and product.strip() and product.lower() != "not recorded":
-            product_filter = " AND LOWER(rcf.product) = %s"
+            product_filter = " AND LOWER(ed.product) = %s"
             params.append(product.strip().lower())
         else:
             product_filter = ""
 
         sql = f"""
-            SELECT DISTINCT c.request_id, c.comment_data, rcf.product
+            SELECT DISTINCT c.request_id, c.comment_data, ed.product
             FROM comments c
-            LEFT JOIN request_custom_fields rcf ON c.request_id = rcf.request_id
+            LEFT JOIN entity_data ed ON c.request_id = ed.entity_id
             WHERE ({where_clause}){product_filter}
         """
 
@@ -1226,9 +1251,9 @@ def search_cached_issues_by_product_keyword(product: str | None, keywords: list[
             all_rows = c.fetchall()
         except Exception:
             c.execute("""
-                SELECT c.request_id, c.comment_data, rcf.product
+                SELECT c.request_id, c.comment_data, ed.product
                 FROM comments c
-                LEFT JOIN request_custom_fields rcf ON c.request_id = rcf.request_id
+                LEFT JOIN entity_data ed ON c.request_id = ed.entity_id
             """)
             all_rows = c.fetchall()
             if product and product.strip() and product.lower() != "not recorded":

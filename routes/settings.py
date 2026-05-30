@@ -622,20 +622,27 @@ async def _cache_range_sse(start: int, end: int, mode: str):
 
     conn = get_conn()
     c = conn.cursor()
-    c.execute("SELECT request_id FROM comments WHERE request_id BETWEEN %s AND %s", (start, end))
-    existing = {r[0] for r in c.fetchall()}
-    missing = sorted(set(range(start, end + 1)) - existing)
-    skipped_count = total_in_range - len(missing)
-    _cache_range_state["skipped"] = skipped_count
 
-    c.execute("""
-        SELECT c.request_id FROM comments c
-        LEFT JOIN entity_data e ON c.request_id = e.entity_id
-        WHERE c.request_id BETWEEN %s AND %s AND e.entity_id IS NULL
-    """, (start, end))
-    stale = {r[0] for r in c.fetchall()} - set(missing)
-    stale_metadata = sorted(stale)
-    _cache_range_state["metadata_only"] = len(stale_metadata)
+    if mode == "force":
+        missing = list(range(start, end + 1))
+        stale_metadata = []
+        _cache_range_state["skipped"] = 0
+        _cache_range_state["metadata_only"] = 0
+    else:
+        c.execute("SELECT request_id FROM comments WHERE request_id BETWEEN %s AND %s", (start, end))
+        existing = {r[0] for r in c.fetchall()}
+        missing = sorted(set(range(start, end + 1)) - existing)
+        skipped_count = total_in_range - len(missing)
+        _cache_range_state["skipped"] = skipped_count
+
+        c.execute("""
+            SELECT c.request_id FROM comments c
+            LEFT JOIN entity_data e ON c.request_id = e.entity_id
+            WHERE c.request_id BETWEEN %s AND %s AND e.entity_id IS NULL
+        """, (start, end))
+        stale = {r[0] for r in c.fetchall()} - set(missing)
+        stale_metadata = sorted(stale)
+        _cache_range_state["metadata_only"] = len(stale_metadata)
 
     early_return = False
     if mode == "smart" and not missing and not stale_metadata:
