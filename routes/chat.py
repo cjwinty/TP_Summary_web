@@ -315,7 +315,7 @@ async def chat_send(req: ChatSendRequest):
             c = conn.cursor()
             c.execute(
                 "SELECT DISTINCT e.request_id FROM embeddings e WHERE "
-                + " OR ".join(like_clauses)
+                + " AND ".join(like_clauses)
                 + " AND e.request_id NOT IN (SELECT unnest(%s::int[]))",
                 (*params, list({s["id"] for s in sources})),
             )
