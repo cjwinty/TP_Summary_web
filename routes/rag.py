@@ -15,6 +15,7 @@ from database import (
 )
 
 from shared import config as cfg
+from routes.chat import _parse_mentioned_ids, _fetch_direct_entity_context
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -385,6 +386,16 @@ async def ask_rag(req: AskRequest):
                 context_parts.append(f"  Comment: {comments_text}")
             context_parts.append("")
         context = "\n".join(context_parts)
+
+    mentioned_ids = _parse_mentioned_ids(req.query)
+    if mentioned_ids:
+        existing_ids = {s["id"] for s in sources}
+        missing_ids = mentioned_ids - existing_ids
+        if missing_ids:
+            direct_ctx, direct_src = _fetch_direct_entity_context(conn, missing_ids)
+            if direct_ctx:
+                context = direct_ctx + "\n\n" + context if context else direct_ctx
+                sources = direct_src + sources
 
     prompt = (
         "You are a support ticket knowledge base. Each ticket shows its full ticket profile "

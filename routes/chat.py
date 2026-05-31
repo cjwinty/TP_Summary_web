@@ -13,6 +13,9 @@ from database import (
     get_chat_history,
     get_conn,
     get_distinct_filter_options,
+    get_entity_data,
+    get_cached_comments,
+    _build_metadata_blob,
 )
 
 from shared import config as cfg
@@ -36,7 +39,8 @@ REQUERY_PROMPT = (
     "terms they refer to in the conversation\n"
     "2. Keep it concise \u2014 10 to 30 words, a single sentence\n"
     "3. Return ONLY the rewritten query, nothing else\n"
-    "4. Never add information not present in the history or question\n\n"
+    "4. Never add information not present in the history or question\n"
+    "5. Preserve any ticket IDs (e.g. #12345 or id 12345) in the rewritten query\n\n"
     "Conversation:\n"
     "User: {prev_q}\n"
     "Assistant: {prev_a}\n\n"
@@ -104,8 +108,40 @@ def _get_exclude_ids(state: dict) -> set[int]:
     return excluded
 
 
-def _parse_exempt_ids(text: str) -> set[int]:
-    return {int(m) for m in re.findall(r'#(\d+)', text)}
+def _parse_mentioned_ids(text: str) -> set[int]:
+    ids = set()
+    ids.update(int(m) for m in re.findall(r'#(\d+)', text))
+    ids.update(int(m) for m in re.findall(r'(?i)id\s+(\d+)', text))
+    return ids
+
+
+def _fetch_direct_entity_context(conn, entity_ids: set[int]) -> tuple[str, list[dict]]:
+    if not entity_ids:
+        return "", []
+    context_parts = []
+    sources = []
+    for rid in sorted(entity_ids):
+        ed = get_entity_data(rid)
+        if not ed:
+            continue
+        et = ed.get("entity_type", "Request")
+        state = ed.get("entity_state", "")
+        blob = _build_metadata_blob(rid, et, ed)
+        header = blob or f"[{et} #{rid}]"
+        entity_lines = [header]
+        comments_data = get_cached_comments(rid)
+        if comments_data:
+            comments, _ = comments_data
+            if comments:
+                for cm in comments[:10]:
+                    text = (cm.get("text") or "").strip()[:1200]
+                    if text:
+                        entity_lines.append(f"  Comment: {text}")
+        if context_parts:
+            context_parts.append("")
+        context_parts.extend(entity_lines)
+        sources.append({"id": rid, "type": et, "state": state})
+    return "\n".join(context_parts), sources
 
 
 def _build_requery_text(last_msgs: list[dict]) -> str:
@@ -154,12 +190,12 @@ async def chat_send(req: ChatSendRequest):
     state = _get_session_state(req.session_id)
     history = get_chat_history(req.session_id, limit=12)
 
-    exempt_ids = _parse_exempt_ids(req.message)
+    mentioned_ids = _parse_mentioned_ids(req.message)
     exclude_ids = _get_exclude_ids(state)
-    exclude_ids -= exempt_ids
+    exclude_ids -= mentioned_ids
 
-    if exempt_ids:
-        logger.info("Exempting IDs from exclusion: %s", exempt_ids)
+    if mentioned_ids:
+        logger.info("Mentioned IDs in message: %s", mentioned_ids)
 
     is_first_turn = len(history) < 2
 
@@ -246,6 +282,15 @@ async def chat_send(req: ChatSendRequest):
                 context_parts.append(f"  Comment: {comments_text}")
             context_parts.append("")
         context = "\n".join(context_parts)
+
+    if mentioned_ids:
+        existing_ids = {s["id"] for s in sources}
+        missing_ids = mentioned_ids - existing_ids
+        if missing_ids:
+            direct_ctx, direct_src = _fetch_direct_entity_context(conn, missing_ids)
+            if direct_ctx:
+                context = direct_ctx + "\n\n" + context if context else direct_ctx
+                sources = direct_src + sources
 
     history_text = ""
     for h in history[-10:]:
