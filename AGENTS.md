@@ -207,9 +207,14 @@ All routes are defined under their respective router in `routes/`. The `main.py`
 - `summarise_comments()` — main summarisation prompt
 - `summarise_batch()` — batch summarisation
 - `summarise_search_results()` — search result synthesis
+- `get_prompt(name)` — load prompt from DB with fallback to `DEFAULT_PROMPTS`; used by summarisation and chatbot routes
 
 ### `shared/retrieval.py` — Shared RAG retrieval
 - `vector_search(query_embedding, max_entities=10, chunk_char_limit=1200, token_budget=30000, exclude_ids=None, filter_clauses=None, filter_params=None)` — queries top 80 chunks from embeddings table, groups by entity, excludes seen entities, sorts by best-chunk distance, allocates ~30k token budget dynamically across top entities. Returns `(context_str, sources)`. Used by both `/chat/send` and `/rag/ask` to avoid duplication.
+
+## Settings: Prompt Management
+
+The Settings page lists all prompts from the `prompts` DB table in a **Prompt Management** section, including `chat_qa` (main chatbot Q&A instruction) and `chat_requery` (follow-up query rewriter). Users can click any prompt name to load its content, edit it, and save. "Reset to Default" reverts to the hardcoded value in `DEFAULT_PROMPTS`. Both chatbot endpoints use `shared/analysis.get_prompt(name)` to load from DB with fallback to defaults.
 
 ## Settings: Cache Management
 
