@@ -2,7 +2,7 @@ import json
 import logging
 import threading
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel
 
 from shared import config as cfg
@@ -72,8 +72,8 @@ async def get_prompt_content(name: str):
     from database import get_prompt
     p = get_prompt(name)
     if p:
-        return JSONResponse({"name": name, "content": p["content"]})
-    return JSONResponse({"name": name, "content": ""})
+        return PlainTextResponse(p["content"])
+    return PlainTextResponse("")
 
 
 @router.post("/settings/prompts")
