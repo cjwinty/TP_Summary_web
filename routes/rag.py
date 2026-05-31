@@ -15,6 +15,7 @@ from database import (
 )
 
 from shared import config as cfg
+from shared.analysis import get_prompt as _load_prompt
 from routes.chat import _parse_mentioned_ids, _fetch_direct_entity_context, _extract_key_terms
 
 logger = logging.getLogger(__name__)
@@ -409,25 +410,32 @@ async def ask_rag(req: AskRequest):
             c.execute(
                 "SELECT DISTINCT e.request_id FROM embeddings e WHERE "
                 + " OR ".join(like_clauses)
-                + " AND e.request_id NOT IN (SELECT unnest(%s::int[])) LIMIT 20",
+                + " AND e.request_id NOT IN (SELECT unnest(%s::int[]))",
                 (*params, list({s["id"] for s in sources})),
             )
-            text_match_ids = {r[0] for r in c.fetchall()}
+            text_match_ids = sorted({r[0] for r in c.fetchall()}, reverse=True)
             if text_match_ids:
-                k_ctx, k_src = _fetch_direct_entity_context(conn, text_match_ids)
-                if k_ctx:
-                    context = context + "\n\n" + k_ctx if context else k_ctx
-                    sources = sources + k_src
+                existing_ids = {s["id"] for s in sources}
+                added = 0
+                for kid in text_match_ids:
+                    if kid in existing_ids:
+                        continue
+                    k_ctx, k_src = _fetch_direct_entity_context(conn, {kid})
+                    if k_ctx:
+                        context = context + "\n\n" + k_ctx if context else k_ctx
+                        sources = sources + k_src
+                        existing_ids.add(kid)
+                        added += 1
+                    if added >= 5:
+                        break
+                if len(text_match_ids) > added:
+                    all_match = ", ".join(f"#{i}" for i in text_match_ids)
+                    context += f"\n\nAll entities matching key terms: {all_match}"
 
-    prompt = (
-        "You are a support ticket knowledge base. Each ticket shows its full ticket profile "
-        "(state, project, client, product, version, custom fields, description) followed by relevant comments. Use this as evidence "
-        "for your answer. If the available information is insufficient, say what you "
-        "know and what's missing.\n\n"
-        f"Context:\n{context}\n\n"
-        f"Question: {req.query}\n\n"
-        "Answer concisely based on the context."
-    )
+    prompt = _load_prompt("chat_qa") + "\n\n"
+    if context:
+        prompt += f"Relevant ticket context:\n{context}\n\n"
+    prompt += f"Question: {req.query}"
 
     try:
         cfg.initialise_llm()

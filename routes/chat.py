@@ -316,15 +316,27 @@ async def chat_send(req: ChatSendRequest):
             c.execute(
                 "SELECT DISTINCT e.request_id FROM embeddings e WHERE "
                 + " OR ".join(like_clauses)
-                + " AND e.request_id NOT IN (SELECT unnest(%s::int[])) LIMIT 20",
+                + " AND e.request_id NOT IN (SELECT unnest(%s::int[]))",
                 (*params, list({s["id"] for s in sources})),
             )
-            text_match_ids = {r[0] for r in c.fetchall()}
+            text_match_ids = sorted({r[0] for r in c.fetchall()}, reverse=True)
             if text_match_ids:
-                k_ctx, k_src = _fetch_direct_entity_context(conn, text_match_ids)
-                if k_ctx:
-                    context = context + "\n\n" + k_ctx if context else k_ctx
-                    sources = sources + k_src
+                existing_ids = {s["id"] for s in sources}
+                added = 0
+                for kid in text_match_ids:
+                    if kid in existing_ids or kid in exclude_ids:
+                        continue
+                    k_ctx, k_src = _fetch_direct_entity_context(conn, {kid})
+                    if k_ctx:
+                        context = context + "\n\n" + k_ctx if context else k_ctx
+                        sources = sources + k_src
+                        existing_ids.add(kid)
+                        added += 1
+                    if added >= 5:
+                        break
+                if len(text_match_ids) > added:
+                    all_match = ", ".join(f"#{i}" for i in text_match_ids)
+                    context += f"\n\nAll entities matching key terms: {all_match}"
 
     history_text = ""
     for h in history[-10:]:

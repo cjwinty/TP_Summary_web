@@ -347,7 +347,7 @@ Found {match_count} matching entries. Here are the most relevant:
 {results_text}
 
 Provide a concise executive summary of what these results indicate about the query topic.""",
-    "chat_qa": """You are a support knowledge base assistant. Each ticket shows its full ticket profile (state, project, client, product, version, custom fields, description) followed by relevant comments. Use this as evidence for your answer. If the available information is insufficient, say what you know and what's missing.""",
+    "chat_qa": """Answer the user's question directly using only the ticket context below. Each ticket shows its full profile (state, project, client, product, version, custom fields, description) followed by relevant comments. If the user asks for specific entity IDs, list those IDs and explain what each contains. If the available information is insufficient, say what you know and what's missing. Be concise and direct — answer the question asked, do not write a general summary, do not generate markdown tables or headings.""",
     "chat_requery": """You are a search query rewriter. Your job is to convert a follow-up question into a standalone search query for a support ticket database.
 
 Rules:
@@ -373,14 +373,20 @@ def init_default_prompts():
         with _lock:
             conn = _get_conn()
             c = conn.cursor()
-            c.execute("SELECT 1 FROM prompts WHERE name = %s", (name,))
-            if not c.fetchone():
-                now = datetime.now().isoformat()
+            c.execute("SELECT content FROM prompts WHERE name = %s", (name,))
+            row = c.fetchone()
+            now = datetime.now().isoformat()
+            if row is None:
                 c.execute(
                     "INSERT INTO prompts (name, content, is_active, created_at, updated_at) VALUES (%s, %s, %s, %s, %s)",
                     (name, content, name == "summarise", now, now),
                 )
-                conn.commit()
+            elif row[0] != content:
+                c.execute(
+                    "UPDATE prompts SET content = %s, updated_at = %s WHERE name = %s",
+                    (content, now, name),
+                )
+            conn.commit()
 
 
 def get_cached_comments(request_id):
