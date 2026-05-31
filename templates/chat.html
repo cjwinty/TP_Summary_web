@@ -7,7 +7,7 @@
     <div class="chat-controls">
         <div class="filters-row">
             <label>Client:
-                <select x-model="filters.client" class="input">
+                <select x-model="filters.client" class="input" @change="onFilterChange()">
                     <option value="">All</option>
                     <template x-for="opt in filterOptions.clients" :key="opt">
                         <option x-text="opt" :value="opt"></option>
@@ -15,7 +15,7 @@
                 </select>
             </label>
             <label>Product:
-                <select x-model="filters.product" class="input">
+                <select x-model="filters.product" class="input" @change="onFilterChange()">
                     <option value="">All</option>
                     <template x-for="opt in filterOptions.products" :key="opt">
                         <option x-text="opt" :value="opt"></option>
@@ -23,7 +23,7 @@
                 </select>
             </label>
             <label>Project:
-                <select x-model="filters.project" class="input">
+                <select x-model="filters.project" class="input" @change="onFilterChange()">
                     <option value="">All</option>
                     <template x-for="opt in filterOptions.projects" :key="opt">
                         <option x-text="opt" :value="opt"></option>
@@ -31,7 +31,7 @@
                 </select>
             </label>
             <label>Type:
-                <select x-model="filters.entity_type" class="input">
+                <select x-model="filters.entity_type" class="input" @change="onFilterChange()">
                     <option value="">All</option>
                     <template x-for="opt in filterOptions.types" :key="opt">
                         <option x-text="opt" :value="opt"></option>
@@ -39,7 +39,7 @@
                 </select>
             </label>
             <label>State:
-                <select x-model="filters.entity_state" class="input">
+                <select x-model="filters.entity_state" class="input" @change="onFilterChange()">
                     <option value="">All</option>
                     <template x-for="opt in filterOptions.states" :key="opt">
                         <option x-text="opt" :value="opt"></option>
@@ -48,7 +48,8 @@
             </label>
         </div>
         <button @click="resetFilters()" class="btn btn-secondary" style="white-space:nowrap">Reset Filters</button>
-        <button @click="clearChat()" class="btn btn-secondary">Clear</button>
+        <button @click="changeDirection()" class="btn btn-secondary">Change Direction</button>
+        <button @click="clearChat()" class="btn btn-secondary">New Conversation</button>
     </div>
 
     <div class="chat-messages" x-ref="messages">
@@ -136,6 +137,28 @@ function chatBot() {
                 const el = this.$refs.messages;
                 if (el) el.scrollTop = el.scrollHeight;
             });
+        },
+        async changeDirection() {
+            try {
+                await fetch('/chat/reset-direction', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: this.sessionId }),
+                });
+            } catch (e) {}
+            this.messages.push({
+                id: Date.now(),
+                role: 'assistant',
+                content: '\u2014 Direction reset, searching across all tickets again \u2014',
+                sources: [],
+            });
+        },
+        onFilterChange() {
+            fetch('/chat/reset-direction', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session_id: this.sessionId }),
+            }).catch(() => {});
         },
         resetFilters() {
             this.filters = { client: '', product: '', project: '', entity_type: '', entity_state: '' };

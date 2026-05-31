@@ -74,6 +74,16 @@ async def chat_page(request: Request):
     )
 
 
+@router.post("/chat/reset-direction")
+async def reset_direction(req: ChatSessionState):
+    with _session_lock:
+        state = chat_session_state.get(req.session_id)
+        if state:
+            state["turn"] = 0
+            state["seen_ids_per_turn"] = {}
+    return JSONResponse({"ok": True})
+
+
 def _get_session_state(session_id: str) -> dict:
     with _session_lock:
         if session_id not in chat_session_state:
