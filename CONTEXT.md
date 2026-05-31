@@ -92,7 +92,7 @@ On follow-up turns where the user does not re-mention an entity ID (e.g. "what a
 
 ### Keyword Term Fallback
 
-If vector search fails to rank entities containing very specific technical terms (error codes like `ORA-00001`, constraint names like `ANALYSISSYS.IX_FLIGHT_ROUTING_MO_`), a text-based fallback runs after vector search. `_extract_key_terms()` extracts uppercase error codes (`[A-Z]+-\d+`) and long uppercase identifiers (`[A-Z_]{8,}`) from the user's message. These are used in an ILIKE query on the `embeddings` table, and any matching entities not already in sources are injected into context via `_fetch_direct_entity_context()`. This ensures domain-specific technical terms always find relevant tickets regardless of embedding similarity scoring.
+If vector search fails to rank entities containing very specific technical terms (error codes like `ORA-00001`, constraint names like `ANALYSISSYS.IX_FLIGHT_ROUTING_MO_`), a text-based fallback runs after vector search. `_extract_key_terms()` extracts uppercase error codes (`[A-Z]+-\d+`) and long uppercase identifiers (`[A-Z_]{8,}`) from the user's message. These are used in an ILIKE query on the `embeddings` table — no SQL LIMIT (previously `LIMIT 20` truncated by physical storage order, missing legitimate matches), sorted DESC by request_id (newest first), top 5 matching entities injected via `_fetch_direct_entity_context()`, and a text summary of ALL matching IDs appended to context. This ensures domain-specific technical terms always find relevant tickets regardless of embedding similarity scoring.
 
 ### Chatbot Scoping
 
@@ -107,7 +107,7 @@ These filters narrow the vector search and/or keyword fallback to only consider 
 
 Each dimension is **single-select** — one value at a time. Leaving all dimensions blank means no scoping (search across all cached entities).
 
-Matching is **exact equality** (`=`) rather than partial ILIKE, since dropdown values are known exact strings. NULL/empty values are excluded from dropdown options. Filters combine via **AND** logic — each additional filter narrows the result set. Filters apply to both the vector search path (via `INNER JOIN entity_data` + WHERE clause) and the keyword fallback path (post-filtered via `entity_data` lookup).
+Matching is **exact equality** (`=`) rather than partial ILIKE, since dropdown values are known exact strings. NULL/empty values are excluded from dropdown options. Filters combine via **AND** logic — each additional filter narrows the result set. Filters apply to both the vector search path (via `INNER JOIN entity_data` + WHERE clause) and the keyword fallback path (keyword fallback has no `LIMIT` — previously `LIMIT 20` caused entities to be missed based on physical storage order; now sort DESC + inject top 5 as full context + list all matching IDs as text).
 
 Dropdown options are populated from a dedicated `GET /chat/filter-options` endpoint that queries `SELECT DISTINCT ... FROM entity_data` for each of the five columns, excluding NULL/empty values.
 

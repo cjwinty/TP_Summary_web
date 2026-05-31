@@ -150,7 +150,7 @@ All routes are defined under their respective router in `routes/`. The `main.py`
 |--------|------|-------------|
 | GET | `/chat` | Chatbot page |
 | GET | `/chat/filter-options` | Distinct dropdown options for all 5 chatbot filter dimensions (client, product, project, type, state) |
-| POST | `/chat/send` | RAG Q&A endpoint (stateful, 5-turn context, 5-dimension scoping filters). Uses shared `vector_search()` from `shared/retrieval.py` — queries top 80 chunks, groups by entity, allocates 30k token budget dynamically across top 10 entities. Multi-turn re-query: LLM rewrites follow-up questions into standalone search queries with pronoun resolution (rule #5 preserves ticket IDs). Entity exclusion sliding window (last 3 turns) with `#ID` or `id NNNNN` override. **Direct-ID fallback**: after vector search, any entity IDs mentioned in the message (`#NNNNN` or `id NNNNN`) are fetched directly from DB via `_fetch_direct_entity_context()` and prepended to context if missing from vector results. **Focus tracking**: the primary entity from each turn is stored as `focus_id` and automatically injected into context on the next turn, keeping the conversation topic alive across follow-up questions without requiring ID re-mention. Returns structured sources `{id, type, state}`. |
+| POST | `/chat/send` | RAG Q&A endpoint (stateful, 5-turn context, 5-dimension scoping filters). Uses shared `vector_search()` from `shared/retrieval.py` — queries top 80 chunks, groups by entity, allocates 30k token budget dynamically across top 10 entities. Multi-turn re-query: LLM rewrites follow-up questions into standalone search queries with pronoun resolution (rule #5 preserves ticket IDs). Entity exclusion sliding window (last 3 turns) with `#ID` or `id NNNNN` override. **Direct-ID fallback**: after vector search, any entity IDs mentioned in the message (`#NNNNN` or `id NNNNN` or bare 5+ digit numbers) are fetched directly from DB via `_fetch_direct_entity_context()` and prepended to context if missing from vector results. **Focus tracking**: the primary entity from each turn is stored as `focus_id` and automatically injected into context on the next turn. **Keyword term fallback**: after vector search + direct-ID + focus injection, `_extract_key_terms()` extracts error codes (`ORA-00001`) and uppercase identifiers (`ANALYSISSYS.IX_FLIGHT_ROUTING_MO_`). Removes SQL LIMIT (was truncating by physical storage order), sorts DESC (newest first), injects top 5 matching entities as full context via `_fetch_direct_entity_context()`, and appends a text summary listing ALL matching IDs. Returns structured sources `{id, type, state}`. |
 
 ### RAG (`/rag`)
 | Method | Path | Description |
@@ -159,7 +159,7 @@ All routes are defined under their respective router in `routes/`. The `main.py`
 | POST | `/rag/reindex-all` | SSE: regenerate all embeddings |
 | GET | `/rag/reindex-status` | Reindex progress |
 | POST | `/rag/reindex-stop` | Stop reindex |
-| POST | `/rag/ask` | RAG Q&A (grouped-by-entity context, 5-dimension scoping filters, uses shared vector_search). Direct-ID fallback: entity IDs mentioned in query (`#NNNNN` or `id NNNNN`) fetched directly from DB and injected into context. |
+| POST | `/rag/ask` | RAG Q&A (grouped-by-entity context, 5-dimension scoping filters, uses shared vector_search). Direct-ID fallback: entity IDs mentioned in query (`#NNNNN` or `id NNNNN`) fetched directly from DB and injected into context. Uses `_load_prompt("chat_qa")` (same configurable prompt as chatbot). Keyword term fallback with the same DESC-sort no-LIMIT approach. |
 | POST | `/rag/search` | Vector search returning raw embedding matches |
 | POST | `/rag/index` | Index a single entity's comments + summary + metadata blob |
 | POST | `/rag/find-fixes` | Find similar resolved tickets and synthesise fix instructions |
@@ -195,6 +195,7 @@ All routes are defined under their respective router in `routes/`. The `main.py`
 | `auto_index_request_web(request_id, index_summary=True)` | Generate embeddings for entity: collects all texts, calls `LLMClient.generate_embeddings_list()` once (batch API), deletes existing, inserts all chunks |
 | `get_pending_entity_ids_for_metadata()` | Find entities with comments but no entity_data row |
 | `backfill_metadata_for_ids(ids, workers=20)` | Parallel metadata fetch for many IDs using thread pool |
+| `init_default_prompts()` | Insert or update `prompts` table rows from `DEFAULT_PROMPTS` (upserts if content changed since last run) |
 
 ### `shared/llm_providers.py` — LLM abstraction
 - `BaseLLMProvider` → `LocalLLMProvider` (Ollama, LM Studio) / `CloudLLMProvider` (OpenAI-compat, AWS Bedrock)
