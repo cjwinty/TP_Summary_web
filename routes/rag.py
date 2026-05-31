@@ -341,74 +341,16 @@ async def ask_rag(req: AskRequest):
         if not query_embedding or all(v == 0.0 for v in query_embedding):
             return JSONResponse({"error": "Failed to generate query embedding."}, status_code=500)
 
-        if filter_clauses:
-            c.execute(
-                "SELECT e.request_id, e.chunk_text, e.entity_type, e.chunk_type, e.embedding <=> %s::vector AS distance "
-                "FROM embeddings e "
-                "INNER JOIN entity_data ed ON e.request_id = ed.entity_id "
-                "WHERE " + " AND ".join(filter_clauses) + " "
-                "ORDER BY distance LIMIT %s",
-                (json.dumps(query_embedding), *filter_params, req.top_k * 2),
-            )
-        else:
-            c.execute(
-                "SELECT e.request_id, e.chunk_text, e.entity_type, e.chunk_type, e.embedding <=> %s::vector AS distance "
-                "FROM embeddings e ORDER BY distance LIMIT %s",
-                (json.dumps(query_embedding), req.top_k * 2),
-            )
-
-        rows = c.fetchall()
-        # Group by request_id
-        chunks_by_id: dict[int, list] = {}
-        for row in rows:
-            rid = row[0]
-            if rid not in chunks_by_id:
-                chunks_by_id[rid] = []
-            chunks_by_id[rid].append({
-                "chunk_text": row[1],
-                "entity_type": row[2] or "Request",
-                "chunk_type": row[3],
-                "distance": float(row[4]),
-            })
-
-        from database import get_entity_data as _get_ed, get_relations as _get_rel, _build_metadata_blob
-        context_parts = []
-        for rid, chunks in list(chunks_by_id.items())[:req.top_k]:
-            ed = _get_ed(rid)
-            if ed:
-                et = ed.get("entity_type") or chunks[0]["entity_type"]
-                state = ed.get("entity_state") or ""
-                profile = _build_metadata_blob(rid, et, ed)
-
-                rels = _get_rel(rid)
-                if rels:
-                    rel_texts = []
-                    for rel in rels[:5]:
-                        rt = rel.get("related_entity_type") or "?"
-                        rn = rel.get("related_entity_name") or rel.get("related_entity_id") or ""
-                        rel_texts.append(f"{rt} #{rn}")
-                    if profile:
-                        profile += " | Related: " + ", ".join(rel_texts)
-                    else:
-                        profile = f"[{et} #{rid}] | Related: " + ", ".join(rel_texts)
-
-                context_parts.append(profile or f"[{et} #{rid}]")
-                sources.append({"id": rid, "type": et, "state": state})
-            else:
-                et = chunks[0]["entity_type"]
-                context_parts.append(f"[{et} #{rid}]")
-                sources.append({"id": rid, "type": et, "state": ""})
-
-            # Group chunks under the entity heading
-            comment_chunks = [c for c in chunks if c["chunk_type"] in ("comment", "summary")]
-            if comment_chunks:
-                context_parts.append("")
-                for cc in comment_chunks[:5]:
-                    label = "Summary" if cc["chunk_type"] == "summary" else "Comment"
-                    context_parts.append(f"  {label}: {cc['chunk_text'][:600]}")
-                context_parts.append("")
-
-        context = "\n".join(context_parts)
+        from shared.retrieval import vector_search
+        context, sources = vector_search(
+            query_embedding=query_embedding,
+            max_entities=10,
+            chunk_char_limit=1200,
+            token_budget=30000,
+            exclude_ids=None,
+            filter_clauses=filter_clauses,
+            filter_params=filter_params,
+        )
     else:
         from database import search_and_fetch_full, get_entity_data as _get_ed
         kw_results = search_and_fetch_full(req.query, limit=25)
@@ -432,13 +374,13 @@ async def ask_rag(req: AskRequest):
                     filtered.append(r)
             kw_results = filtered
         context_parts = []
-        for r in kw_results[:req.top_k]:
+        for r in kw_results[:10]:
             et = r.get('entity_type', 'Request')
             context_parts.append(f"[{et} #{r['request_id']}]")
             sources.append({"id": r["request_id"], "type": et, "state": ""})
             comments_text = " ".join(
                 cm.get("text", "") for cm in (r.get("comments") or [])
-            )[:1000]
+            )[:1200]
             if comments_text:
                 context_parts.append(f"  Comment: {comments_text}")
             context_parts.append("")

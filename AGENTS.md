@@ -35,6 +35,7 @@ main.py
 │   ├── analysis.py       — LLM prompt templates and summarisation logic
 │   ├── config.py         — .env config loader, LLM provider config, dynamic version from VERSION file + git commit count
 │   ├── llm_providers.py  — BaseLLMProvider, LocalLLMProvider, CloudLLMProvider, LLMClient
+│   ├── retrieval.py      — Shared RAG retrieval: vector_search() with entity grouping, exclusion, and dynamic token budget
 │   └── prompt_chain_executor.py — multi-step prompt chains
 ├── database.py           — PostgreSQL CRUD (psycopg2, all tables)
 ├── jinja_env.py          — Jinja2 template environment
@@ -149,7 +150,7 @@ All routes are defined under their respective router in `routes/`. The `main.py`
 |--------|------|-------------|
 | GET | `/chat` | Chatbot page |
 | GET | `/chat/filter-options` | Distinct dropdown options for all 5 chatbot filter dimensions (client, product, project, type, state) |
-| POST | `/chat/send` | RAG Q&A endpoint (stateful, 6-turn context, 5-dimension scoping filters). Groups results by entity, enriches with entity_data + relations. Returns structured sources `{id, type, state}`. Filters apply via AND logic with exact match on vector search (INNER JOIN entity_data + WHERE) and keyword fallback (entity_data post-filter). |
+| POST | `/chat/send` | RAG Q&A endpoint (stateful, 5-turn context, 5-dimension scoping filters). Uses shared `vector_search()` from `shared/retrieval.py` — queries top 80 chunks, groups by entity, allocates 30k token budget dynamically across top 10 entities. Multi-turn re-query: LLM rewrites follow-up questions into standalone search queries with pronoun resolution. Entity exclusion sliding window (last 3 turns) with `#ID` override. Returns structured sources `{id, type, state}`. |
 
 ### RAG (`/rag`)
 | Method | Path | Description |
@@ -158,7 +159,7 @@ All routes are defined under their respective router in `routes/`. The `main.py`
 | POST | `/rag/reindex-all` | SSE: regenerate all embeddings |
 | GET | `/rag/reindex-status` | Reindex progress |
 | POST | `/rag/reindex-stop` | Stop reindex |
-| POST | `/rag/ask` | RAG Q&A (grouped-by-entity context, 5-dimension scoping filters) |
+| POST | `/rag/ask` | RAG Q&A (grouped-by-entity context, 5-dimension scoping filters, uses shared vector_search) |
 | POST | `/rag/search` | Vector search returning raw embedding matches |
 | POST | `/rag/index` | Index a single entity's comments + summary + metadata blob |
 | POST | `/rag/find-fixes` | Find similar resolved tickets and synthesise fix instructions |
@@ -206,6 +207,9 @@ All routes are defined under their respective router in `routes/`. The `main.py`
 - `summarise_comments()` — main summarisation prompt
 - `summarise_batch()` — batch summarisation
 - `summarise_search_results()` — search result synthesis
+
+### `shared/retrieval.py` — Shared RAG retrieval
+- `vector_search(query_embedding, max_entities=10, chunk_char_limit=1200, token_budget=30000, exclude_ids=None, filter_clauses=None, filter_params=None)` — queries top 80 chunks from embeddings table, groups by entity, excludes seen entities, sorts by best-chunk distance, allocates ~30k token budget dynamically across top entities. Returns `(context_str, sources)`. Used by both `/chat/send` and `/rag/ask` to avoid duplication.
 
 ## Settings: Cache Management
 

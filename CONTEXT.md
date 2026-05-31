@@ -55,7 +55,34 @@ Every embedding chunk (all three `chunk_type` values: `comment`, `summary`, `met
 
 A standalone **metadata blob** (`chunk_type='metadata'`) is created per entity containing the full ticket profile: state, project, client, product, version, all custom fields, description (truncated to 2k chars), and relations. This makes the holistic ticket profile semantically searchable — users can find tickets by description content, custom field values, or relationship patterns.
 
-## Chatbot Scoping
+## Chatbot Retrieval Pipeline
+
+The chatbot and `/rag/ask` endpoint share a common retrieval pipeline in `shared/retrieval.py:vector_search()`. It operates in stages:
+
+1. **Query top 80 chunks** by cosine distance from the embeddings table, with optional `INNER JOIN entity_data` filters
+2. **Group by entity** (`request_id`) — each entity's chunks are collected together
+3. **Apply exclusion set** — entities seen in the last 3 conversation turns are excluded unless explicitly referenced via `#ID` in the user's message
+4. **Sort entities by best-chunk distance** — the entity with the closest-matching chunk comes first
+5. **Take top 10 entities** as candidates
+6. **Dynamic token budget allocation** (~30k tokens): for each entity, add the metadata blob first, then distance-sorted chunks (up to 1200 chars each) until the budget is exhausted. This adapts naturally: specific queries dive deep on 1-2 entities, broad queries spread across all 10.
+
+### Multi-turn Re-query
+
+On turn 2+ in the chatbot, the user's question is rewritten into a standalone search query before embedding:
+
+1. A prompt containing the last 3 messages (2 user + 1 assistant) and the current question is sent to the LLM
+2. The LLM returns a concise standalone query with pronouns resolved
+3. If the rewrite call fails, the last 3 messages are concatenated as a fallback embedding input
+4. The rewritten query is embedded and sent to `vector_search()`
+
+### Entity Exclusion Sliding Window
+
+- Each conversation turn stores the set of entity IDs returned as sources
+- On the next turn, entities from the last 3 turns are excluded from vector search
+- If the user types `#12345` in their message, that entity is exempted from exclusion
+- If exclusion empties the result set, the exclusion is cleared and the search retried (edge case: exhaustive query on a small cache)
+
+### Chatbot Scoping
 
 The chatbot supports scoping the RAG knowledge base by five filter dimensions, all sourced from `entity_data`:
 - **Client** (`entity_data.client`)

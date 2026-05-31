@@ -1,5 +1,7 @@
 import json
 import logging
+import re
+import threading
 import uuid
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -18,6 +20,30 @@ from shared import config as cfg
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+# Per-session state for entity exclusion across turns
+# Structure: {session_id: {"turn": int, "seen_ids_per_turn": {int: set[int]}}}
+chat_session_state: dict[str, dict] = {}
+_session_lock = threading.Lock()
+
+EXCLUSION_WINDOW_TURNS = 3
+
+REQUERY_PROMPT = (
+    "You are a search query rewriter. Your job is to convert a "
+    "follow-up question into a standalone search query for a "
+    "support ticket database.\n\n"
+    "Rules:\n"
+    "1. Replace pronouns (it, that, this, they) with the specific "
+    "terms they refer to in the conversation\n"
+    "2. Keep it concise \u2014 10 to 30 words, a single sentence\n"
+    "3. Return ONLY the rewritten query, nothing else\n"
+    "4. Never add information not present in the history or question\n\n"
+    "Conversation:\n"
+    "User: {prev_q}\n"
+    "Assistant: {prev_a}\n\n"
+    "Follow-up: {current_q}\n\n"
+    "Rewritten query:"
+)
+
 
 class ChatSendRequest(BaseModel):
     session_id: str
@@ -27,6 +53,10 @@ class ChatSendRequest(BaseModel):
     project: Optional[str] = None
     entity_type: Optional[str] = None
     entity_state: Optional[str] = None
+
+
+class ChatSessionState(BaseModel):
+    session_id: str
 
 
 @router.get("/chat/filter-options")
@@ -44,72 +74,94 @@ async def chat_page(request: Request):
     )
 
 
-def _format_grouped_context(rows: list, top_k: int) -> tuple[str, list]:
-    """Group embedding rows by request_id, enrich with entity_data + relations, return (context_str, sources)."""
-    from database import get_entity_data as _get_ed, get_relations as _get_rel, _build_metadata_blob
+def _get_session_state(session_id: str) -> dict:
+    with _session_lock:
+        if session_id not in chat_session_state:
+            chat_session_state[session_id] = {
+                "turn": 0,
+                "seen_ids_per_turn": {},
+            }
+        return chat_session_state[session_id]
 
-    chunks_by_id: dict[int, list] = {}
-    for row in rows:
-        rid = row[0]
-        if rid not in chunks_by_id:
-            chunks_by_id[rid] = []
-        chunks_by_id[rid].append({
-            "chunk_text": row[1],
-            "entity_type": row[2] or "Request",
-            "chunk_type": row[3] if len(row) > 3 else "comment",
-            "distance": float(row[4]) if len(row) > 4 else 0.0,
-        })
 
-    context_parts = []
-    sources = []
+def _get_exclude_ids(state: dict) -> set[int]:
+    seen_ids_per_turn = state.get("seen_ids_per_turn", {})
+    current_turn = state.get("turn", 0)
+    start_turn = max(0, current_turn - EXCLUSION_WINDOW_TURNS)
+    excluded = set()
+    for t in range(start_turn, current_turn):
+        excluded.update(seen_ids_per_turn.get(t, set()))
+    return excluded
 
-    for rid, chunks in list(chunks_by_id.items())[:top_k]:
-        ed = _get_ed(rid)
 
-        if ed:
-            et = ed.get("entity_type") or chunks[0]["entity_type"]
-            state = ed.get("entity_state", "")
-            profile = _build_metadata_blob(rid, et, ed)
+def _parse_exempt_ids(text: str) -> set[int]:
+    return {int(m) for m in re.findall(r'#(\d+)', text)}
 
-            rels = _get_rel(rid)
-            if rels:
-                rel_texts = []
-                for rel in rels[:5]:
-                    rt = rel.get("related_entity_type") or "?"
-                    rn = rel.get("related_entity_name") or str(rel.get("related_entity_id", ""))
-                    rel_texts.append(f"{rt} #{rn}")
-                if profile:
-                    profile += " | Related: " + ", ".join(rel_texts)
-                else:
-                    profile = f"[{et} #{rid}] | Related: " + ", ".join(rel_texts)
 
-            context_parts.append(profile or f"[{et} #{rid}]")
-            sources.append({"id": rid, "type": et, "state": state})
-        else:
-            et = chunks[0]["entity_type"]
-            context_parts.append(f"[{et} #{rid}]")
-            sources.append({"id": rid, "type": et, "state": ""})
+def _build_requery_text(last_msgs: list[dict]) -> str:
+    if len(last_msgs) < 3:
+        return ""
+    prev_q = last_msgs[-3]["content"]
+    prev_a = last_msgs[-2]["content"]
+    current_q = last_msgs[-1]["content"]
+    return REQUERY_PROMPT.format(prev_q=prev_q, prev_a=prev_a, current_q=current_q)
 
-        comment_chunks = [c for c in chunks if c["chunk_type"] in ("comment", "summary")]
-        if comment_chunks:
-            context_parts.append("")
-            for cc in comment_chunks[:5]:
-                label = "Summary" if cc["chunk_type"] == "summary" else "Comment"
-                context_parts.append(f"  {label}: {cc['chunk_text'][:600]}")
-            context_parts.append("")
 
-    return "\n".join(context_parts), sources
+def _get_last_three(session_id: str) -> list[dict]:
+    history = get_chat_history(session_id, limit=12)
+    return history[-3:] if len(history) >= 3 else history
+
+
+def _rewrite_query(session_id: str, message: str, history: list[dict]) -> str:
+    last = history[-3:] if len(history) >= 3 else history
+    if len(last) < 3:
+        return message
+
+    prompt = _build_requery_text(last)
+    if not prompt:
+        return message
+
+    try:
+        from shared.llm_providers import LLMClient
+        rewritten = LLMClient.generate(prompt, temperature=0.0, max_tokens=60)
+        rewritten = rewritten.strip().strip('"').strip("'")
+        if rewritten:
+            logger.info("Re-query rewrite: %r -> %r", message, rewritten)
+            return rewritten
+    except Exception as e:
+        logger.warning("Re-query rewrite failed: %s", e)
+
+    fallback_texts = []
+    for m in last:
+        role = "User" if m["role"] == "user" else "Assistant"
+        fallback_texts.append(f"{role}: {m['content']}")
+    return " | ".join(fallback_texts)
 
 
 @router.post("/chat/send")
 async def chat_send(req: ChatSendRequest):
     cfg.initialise_llm()
+    state = _get_session_state(req.session_id)
     history = get_chat_history(req.session_id, limit=12)
+
+    exempt_ids = _parse_exempt_ids(req.message)
+    exclude_ids = _get_exclude_ids(state)
+    exclude_ids -= exempt_ids
+
+    if exempt_ids:
+        logger.info("Exempting IDs from exclusion: %s", exempt_ids)
+
+    is_first_turn = len(history) < 2
+
+    if is_first_turn:
+        search_query = req.message
+    else:
+        search_query = _rewrite_query(req.session_id, req.message, history)
 
     query_embedding = None
     try:
         from shared.llm_providers import LLMClient
-        query_embedding = LLMClient.generate_embedding(req.message)
+        query_embedding = LLMClient.generate_embedding(search_query)
     except Exception:
         pass
 
@@ -120,7 +172,6 @@ async def chat_send(req: ChatSendRequest):
 
     context = ""
     sources = []
-    top_k = 10
 
     filter_map = {
         "client": "ed.client",
@@ -138,22 +189,16 @@ async def chat_send(req: ChatSendRequest):
             filter_params.append(val)
 
     if has_embeddings and query_embedding and any(v != 0.0 for v in query_embedding):
-        if filter_clauses:
-            c.execute(
-                "SELECT e.request_id, e.chunk_text, e.entity_type, e.chunk_type, e.embedding <=> %s::vector AS distance "
-                "FROM embeddings e "
-                "INNER JOIN entity_data ed ON e.request_id = ed.entity_id "
-                "WHERE " + " AND ".join(filter_clauses) + " "
-                "ORDER BY distance LIMIT %s",
-                (json.dumps(query_embedding), *filter_params, top_k),
-            )
-        else:
-            c.execute(
-                "SELECT e.request_id, e.chunk_text, e.entity_type, e.chunk_type, e.embedding <=> %s::vector AS distance "
-                "FROM embeddings e ORDER BY distance LIMIT %s",
-                (json.dumps(query_embedding), top_k),
-            )
-        context, sources = _format_grouped_context(c.fetchall(), 5)
+        from shared.retrieval import vector_search
+        context, sources = vector_search(
+            query_embedding=query_embedding,
+            max_entities=10,
+            chunk_char_limit=1200,
+            token_budget=30000,
+            exclude_ids=exclude_ids,
+            filter_clauses=filter_clauses,
+            filter_params=filter_params,
+        )
     else:
         from database import search_and_fetch_full, get_entity_data as _get_ed
         kw_results = search_and_fetch_full(req.message, limit=25)
@@ -176,20 +221,24 @@ async def chat_send(req: ChatSendRequest):
                 ):
                     filtered.append(r)
             kw_results = filtered
-        kw_rows = []
-        for r in kw_results[:5]:
-            kw_rows.append((
-                r["request_id"],
-                " ".join(cm.get("text", "") for cm in (r.get("comments") or []))[:1000],
-                r.get("entity_type", "Request"),
-                "comment",
-                0.0,
-            ))
-        if kw_rows:
-            context, sources = _format_grouped_context(kw_rows, 5)
+        context_parts = []
+        for r in kw_results[:10]:
+            rid = r["request_id"]
+            if rid in exclude_ids:
+                continue
+            et = r.get("entity_type", "Request")
+            context_parts.append(f"[{et} #{rid}]")
+            sources.append({"id": rid, "type": et, "state": ""})
+            comments_text = " ".join(
+                cm.get("text", "") for cm in (r.get("comments") or [])
+            )[:1200]
+            if comments_text:
+                context_parts.append(f"  Comment: {comments_text}")
+            context_parts.append("")
+        context = "\n".join(context_parts)
 
     history_text = ""
-    for h in history[-6:]:
+    for h in history[-10:]:
         role = "User" if h["role"] == "user" else "Assistant"
         history_text += f"{role}: {h['content']}\n"
 
@@ -210,6 +259,11 @@ async def chat_send(req: ChatSendRequest):
         answer = LLMClient.generate(prompt, temperature=0.3)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
+    with _session_lock:
+        state["turn"] += 1
+        seen_ids = {s["id"] for s in sources}
+        state["seen_ids_per_turn"][state["turn"]] = seen_ids
 
     save_chat_message(req.session_id, "user", req.message)
     save_chat_message(req.session_id, "assistant", answer)
