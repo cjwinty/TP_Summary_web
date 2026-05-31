@@ -90,6 +90,10 @@ After vector search (or keyword fallback) runs, both `/chat/send` and `/rag/ask`
 
 On follow-up turns where the user does not re-mention an entity ID (e.g. "what about its relations?"), the primary entity from the previous turn is automatically injected into context. Each turn stores the first source's ID as `focus_id` in the session state. On the next turn, if `focus_id` is not already in the current sources, its context is fetched directly and prepended. This keeps the conversation topic alive across natural follow-up questions. When the user explicitly mentions a new ID, that ID becomes the new focus. Clicking "Change Direction" clears `focus_id` along with the exclusion window.
 
+### Keyword Term Fallback
+
+If vector search fails to rank entities containing very specific technical terms (error codes like `ORA-00001`, constraint names like `ANALYSISSYS.IX_FLIGHT_ROUTING_MO_`), a text-based fallback runs after vector search. `_extract_key_terms()` extracts uppercase error codes (`[A-Z]+-\d+`) and long uppercase identifiers (`[A-Z_]{8,}`) from the user's message. These are used in an ILIKE query on the `embeddings` table, and any matching entities not already in sources are injected into context via `_fetch_direct_entity_context()`. This ensures domain-specific technical terms always find relevant tickets regardless of embedding similarity scoring.
+
 ### Chatbot Scoping
 
 The chatbot supports scoping the RAG knowledge base by five filter dimensions, all sourced from `entity_data`:

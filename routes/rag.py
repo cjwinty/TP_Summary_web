@@ -15,7 +15,7 @@ from database import (
 )
 
 from shared import config as cfg
-from routes.chat import _parse_mentioned_ids, _fetch_direct_entity_context
+from routes.chat import _parse_mentioned_ids, _fetch_direct_entity_context, _extract_key_terms
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -396,6 +396,28 @@ async def ask_rag(req: AskRequest):
             if direct_ctx:
                 context = direct_ctx + "\n\n" + context if context else direct_ctx
                 sources = direct_src + sources
+
+    key_terms = _extract_key_terms(req.query)
+    if key_terms and has_embeddings:
+        like_clauses = []
+        params = []
+        for term in key_terms[:5]:
+            like_clauses.append("e.chunk_text ILIKE %s")
+            params.append("%" + term + "%")
+        if like_clauses:
+            c = conn.cursor()
+            c.execute(
+                "SELECT DISTINCT e.request_id FROM embeddings e WHERE "
+                + " OR ".join(like_clauses)
+                + " AND e.request_id NOT IN (SELECT unnest(%s::int[])) LIMIT 20",
+                (*params, list({s["id"] for s in sources})),
+            )
+            text_match_ids = {r[0] for r in c.fetchall()}
+            if text_match_ids:
+                k_ctx, k_src = _fetch_direct_entity_context(conn, text_match_ids)
+                if k_ctx:
+                    context = context + "\n\n" + k_ctx if context else k_ctx
+                    sources = sources + k_src
 
     prompt = (
         "You are a support ticket knowledge base. Each ticket shows its full ticket profile "

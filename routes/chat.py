@@ -98,6 +98,7 @@ def _parse_mentioned_ids(text: str) -> set[int]:
     ids = set()
     ids.update(int(m) for m in re.findall(r'#(\d+)', text))
     ids.update(int(m) for m in re.findall(r'(?i)id\s+(\d+)', text))
+    ids.update(int(m) for m in re.findall(r'\b(\d{5,})\b', text))
     return ids
 
 
@@ -136,6 +137,13 @@ def _fetch_direct_entity_context(conn, entity_ids: set[int]) -> tuple[str, list[
         context_parts.extend(entity_lines)
         sources.append({"id": rid, "type": et, "state": state})
     return "\n".join(context_parts), sources
+
+
+def _extract_key_terms(text: str) -> list[str]:
+    terms = set()
+    terms.update(re.findall(r'\b[A-Z]+-\d+\b', text))
+    terms.update(re.findall(r'\b[A-Z_]{8,}\b', text))
+    return list(terms)
 
 
 def _build_requery_text(last_msgs: list[dict]) -> str:
@@ -295,6 +303,28 @@ async def chat_send(req: ChatSendRequest):
             if focus_ctx:
                 context = focus_ctx + "\n\n" + context if context else focus_ctx
                 sources = focus_src + sources
+
+    key_terms = _extract_key_terms(req.message)
+    if key_terms and has_embeddings:
+        like_clauses = []
+        params = []
+        for term in key_terms[:5]:
+            like_clauses.append("e.chunk_text ILIKE %s")
+            params.append("%" + term + "%")
+        if like_clauses:
+            c = conn.cursor()
+            c.execute(
+                "SELECT DISTINCT e.request_id FROM embeddings e WHERE "
+                + " OR ".join(like_clauses)
+                + " AND e.request_id NOT IN (SELECT unnest(%s::int[])) LIMIT 20",
+                (*params, list({s["id"] for s in sources})),
+            )
+            text_match_ids = {r[0] for r in c.fetchall()}
+            if text_match_ids:
+                k_ctx, k_src = _fetch_direct_entity_context(conn, text_match_ids)
+                if k_ctx:
+                    context = context + "\n\n" + k_ctx if context else k_ctx
+                    sources = sources + k_src
 
     history_text = ""
     for h in history[-10:]:
