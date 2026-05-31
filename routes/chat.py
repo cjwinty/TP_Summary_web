@@ -85,6 +85,7 @@ async def reset_direction(req: ChatSessionState):
         if state:
             state["turn"] = 0
             state["seen_ids_per_turn"] = {}
+            state["focus_id"] = None
     return JSONResponse({"ok": True})
 
 
@@ -94,6 +95,7 @@ def _get_session_state(session_id: str) -> dict:
             chat_session_state[session_id] = {
                 "turn": 0,
                 "seen_ids_per_turn": {},
+                "focus_id": None,
             }
         return chat_session_state[session_id]
 
@@ -292,6 +294,15 @@ async def chat_send(req: ChatSendRequest):
                 context = direct_ctx + "\n\n" + context if context else direct_ctx
                 sources = direct_src + sources
 
+    focus_id = state.get("focus_id")
+    if focus_id is not None:
+        existing_ids = {s["id"] for s in sources}
+        if focus_id not in existing_ids:
+            focus_ctx, focus_src = _fetch_direct_entity_context(conn, {focus_id})
+            if focus_ctx:
+                context = focus_ctx + "\n\n" + context if context else focus_ctx
+                sources = focus_src + sources
+
     history_text = ""
     for h in history[-10:]:
         role = "User" if h["role"] == "user" else "Assistant"
@@ -319,6 +330,7 @@ async def chat_send(req: ChatSendRequest):
         state["turn"] += 1
         seen_ids = {s["id"] for s in sources}
         state["seen_ids_per_turn"][state["turn"]] = seen_ids
+        state["focus_id"] = sources[0]["id"] if sources else None
 
     save_chat_message(req.session_id, "user", req.message)
     save_chat_message(req.session_id, "assistant", answer)
