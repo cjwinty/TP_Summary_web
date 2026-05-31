@@ -86,6 +86,10 @@ On turn 2+ in the chatbot, the user's question is rewritten into a standalone se
 
 After vector search (or keyword fallback) runs, both `/chat/send` and `/rag/ask` check the original message for mentions of entity IDs via `_parse_mentioned_ids()`. Any mentioned IDs not already present in the vector search results are fetched directly from the database via `_fetch_direct_entity_context()` — which retrieves the entity's metadata blob (state, project, client, product, custom fields, description) and up to 10 cached comments. This guarantees that explicitly referenced entities always appear in context, regardless of their vector similarity score.
 
+### Focus Tracking
+
+On follow-up turns where the user does not re-mention an entity ID (e.g. "what about its relations?"), the primary entity from the previous turn is automatically injected into context. Each turn stores the first source's ID as `focus_id` in the session state. On the next turn, if `focus_id` is not already in the current sources, its context is fetched directly and prepended. This keeps the conversation topic alive across natural follow-up questions. When the user explicitly mentions a new ID, that ID becomes the new focus. Clicking "Change Direction" clears `focus_id` along with the exclusion window.
+
 ### Chatbot Scoping
 
 The chatbot supports scoping the RAG knowledge base by five filter dimensions, all sourced from `entity_data`:
