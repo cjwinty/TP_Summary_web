@@ -15,6 +15,7 @@ from database import (
     get_distinct_filter_options,
     get_entity_data,
     get_cached_comments,
+    get_relations,
     _build_metadata_blob,
 )
 
@@ -130,6 +131,14 @@ def _fetch_direct_entity_context(conn, entity_ids: set[int]) -> tuple[str, list[
         state = ed.get("entity_state", "")
         blob = _build_metadata_blob(rid, et, ed)
         header = blob or f"[{et} #{rid}]"
+        rels = get_relations(rid)
+        if rels:
+            rel_texts = []
+            for rel in rels[:5]:
+                rt = rel.get("related_entity_type") or "?"
+                rn = rel.get("related_entity_name") or str(rel.get("related_entity_id", ""))
+                rel_texts.append(f"{rt} #{rn}")
+            header += " | Related: " + ", ".join(rel_texts)
         entity_lines = [header]
         comments_data = get_cached_comments(rid)
         if comments_data:
