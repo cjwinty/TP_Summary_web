@@ -347,6 +347,23 @@ Found {match_count} matching entries. Here are the most relevant:
 {results_text}
 
 Provide a concise executive summary of what these results indicate about the query topic.""",
+    "chat_qa": """You are a support knowledge base assistant. Each ticket shows its full ticket profile (state, project, client, product, version, custom fields, description) followed by relevant comments. Use this as evidence for your answer. If the available information is insufficient, say what you know and what's missing.""",
+    "chat_requery": """You are a search query rewriter. Your job is to convert a follow-up question into a standalone search query for a support ticket database.
+
+Rules:
+1. Replace pronouns (it, that, this, they) with the specific terms they refer to in the conversation
+2. Keep it concise \u2014 10 to 30 words, a single sentence
+3. Return ONLY the rewritten query, nothing else
+4. Never add information not present in the history or question
+5. Preserve any ticket IDs (e.g. #12345 or id 12345) in the rewritten query
+
+Conversation:
+User: {prev_q}
+Assistant: {prev_a}
+
+Follow-up: {current_q}
+
+Rewritten query:""",
 }
 
 

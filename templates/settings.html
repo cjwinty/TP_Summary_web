@@ -91,14 +91,15 @@
 
     <section class="card">
         <h3>Prompt Management</h3>
-        <div id="prompt-list" hx-get="/settings/prompts" hx-trigger="load" hx-swap="innerHTML"></div>
+        <div id="prompt-list" hx-get="/settings/prompts" hx-trigger="load" hx-swap="innerHTML"
+             @click="selectPrompt($event)"></div>
         <div class="form-row">
             <label>Content:</label>
             <textarea class="input textarea" id="prompt-content" rows="6"></textarea>
         </div>
         <div class="btn-row">
-            <button class="btn btn-primary" id="save-prompt-btn">Save Changes</button>
-            <button class="btn btn-secondary" id="reset-prompt-btn">Reset to Default</button>
+            <button class="btn btn-primary" @click="savePrompt()">Save Changes</button>
+            <button class="btn btn-secondary" @click="resetPrompt()">Reset to Default</button>
         </div>
     </section>
 
@@ -279,6 +280,7 @@ function settingsData() {
         healthData: null,
         tooltipTimer: null,
         activeTooltip: null,
+        selectedPrompt: '',
         startTooltip(name) {
             this.stopTooltip();
             this.tooltipTimer = setTimeout(() => { this.activeTooltip = name; }, 5000);
@@ -886,7 +888,26 @@ function settingsData() {
             const status = document.getElementById('cache-range-status');
             if (status) status.textContent = 'Requesting stop...';
             fetch('/settings/cache-range-stop', { method: 'POST' }).catch(() => {});
-        }
+        },
+        selectPrompt(e) {
+            const item = e.target.closest('.prompt-item');
+            if (item) this.selectedPrompt = item.dataset.name;
+        },
+        async savePrompt() {
+            const name = this.selectedPrompt;
+            if (!name) return;
+            const content = document.getElementById('prompt-content').value;
+            await fetch('/settings/prompts', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, content }),
+            });
+        },
+        async resetPrompt() {
+            const name = this.selectedPrompt;
+            if (!name) return;
+            await fetch('/settings/prompts/reset/' + encodeURIComponent(name), { method: 'POST' });
+        },
     };
 }
 </script>
